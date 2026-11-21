@@ -136,6 +136,7 @@ body.sheet-open #fabs { opacity: 0; pointer-events: none; transform: translateY(
 .fab:active { transform: scale(0.94); }
 .fab.on { background: var(--t1); color: var(--bg); }
 #btn-locate.on { color: var(--me); }
+#btn-locate.orbit { color: var(--me); box-shadow: 0 0 0 2px var(--me) inset; }
 #btn-locate.busy svg { animation: pulse 1s var(--ease-io) infinite; }
 
 #status {

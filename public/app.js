@@ -176,7 +176,7 @@
   window.map = map;
   map.addControl(new mapboxgl.AttributionControl({ compact: true, customAttribution: 'Live: Delhi OTD · reclaim.city · Metro stations © OpenStreetMap · 3D: <a href="https://factory.railisland.com/model/proc-vehicle-ikarus-260/" target="_blank" rel="noopener">Ikarus 260</a> by Rail Island, <a href="https://grab3d.com/models/city/bus-stop-shelter/" target="_blank" rel="noopener">Bus Stop Shelter</a> by Grab3D (CC0 1.0)' }), 'bottom-right');
   map.touchZoomRotate.disableRotation();
-  ['dragstart', 'zoomstart', 'pitchstart', 'rotatestart'].forEach((ev) => map.on(ev, (e) => { if (e.originalEvent) { S.interacting = true; if (S.followId) stopFollow(true); } }));
+  ['dragstart', 'zoomstart', 'pitchstart', 'rotatestart'].forEach((ev) => map.on(ev, (e) => { if (e.originalEvent) { S.interacting = true; if (S.followId) stopFollow(true); stopOrbit(); } }));
   map.on('moveend', () => { S.interacting = false; refreshView(true); });
 
   function makeImage(w, h, draw, opts) {
@@ -530,6 +530,7 @@
     if (btn) { btn.classList.remove('on'); btn.lastChild.textContent = 'Follow'; }
   }
   function startFollow(id) {
+    stopOrbit();
     S.followId = id;
     const p = pos(id, performance.now());
     if (p) map.easeTo({ center: [p.lon, p.lat], zoom: Math.max(map.getZoom(), 15.5), duration: 700, padding: sheetPadding() });
@@ -768,9 +769,28 @@
         { enableHighAccuracy: true, timeout: timeout || 9000, maximumAge: 30000 });
     });
   }
+  // Locate: fly to the user, tilt up and slowly orbit around them, Google Earth style.
+  // The orbit runs until they touch the map, press the locate button again, follow a bus or toggle 3D.
+  let orbitOn = false;
+  function stopOrbit() {
+    if (!orbitOn) return;
+    orbitOn = false;
+    ui.btnLocate.classList.remove('orbit');
+    map.stop();
+  }
+  function startOrbit() {
+    orbitOn = true;
+    ui.btnLocate.classList.add('orbit');
+    // one long slow spin (22.5 s per revolution); map.stop() on any interaction ends it
+    map.rotateTo(map.getBearing() + 3600, { duration: 225000, easing: (t) => t });
+  }
   ui.btnLocate.addEventListener('click', async () => {
-    try { const loc = await locate(); map.flyTo({ center: [loc.lon, loc.lat], zoom: Math.max(map.getZoom(), 15), duration: 900, padding: sheetPadding() }); }
-    catch (e) { toast(e.message); }
+    if (orbitOn) { stopOrbit(); return; }
+    try {
+      const loc = await locate();
+      map.flyTo({ center: [loc.lon, loc.lat], zoom: Math.max(map.getZoom(), 16.2), pitch: 60, duration: 1700, padding: sheetPadding() });
+      map.once('moveend', () => { if (!S.followId) startOrbit(); });
+    } catch (e) { toast(e.message); }
   });
 
   function fitTo(points, maxZoom) {
@@ -1665,6 +1685,7 @@
   map.on('moveend', refreshStops3d);
 
   function set3D(on, jump) {
+    stopOrbit();
     S.is3D = on;
     camLockUntil = performance.now() + 1000; // followTick's setCenter would cancel this easeTo
     ui.btn3d.classList.toggle('on', on); ui.btn3d.setAttribute('aria-pressed', on);
