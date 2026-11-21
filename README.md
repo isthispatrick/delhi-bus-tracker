@@ -4,7 +4,9 @@ Live at https://bus.shreyanshs.xyz
 
 ![Delhi Bus Tracker](docs/screenshot.png)
 
-<video src="https://raw.githubusercontent.com/isthispatrick/delhi-bus-tracker/main/docs/demo.mp4" controls muted playsinline width="720"></video>
+Demo (20 s):
+
+https://github.com/user-attachments/assets/ea8ed14a-834c-4395-8d76-1409451fc277
 
 Live map of Delhi's buses with a destination search and a walk + bus + metro trip planner. Built on the Delhi government's Open Transit Data (GTFS-RT) feed and Mapbox. Static frontend, no framework; small Node API on Vercel.
 
