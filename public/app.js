@@ -486,7 +486,7 @@
     visible() { return this.state === 'closed' ? 0 : ui.sheet.offsetHeight - this.heights()[this.state]; },
   };
   function sheetPadding() {
-    const top = (document.getElementById('appbar').getBoundingClientRect().bottom || 120) + 16;
+    const top = (document.getElementById('appbar').getBoundingClientRect().bottom || 120) + 52; // room for the 42 px destination pin
     const wide = window.innerWidth >= 720;
     return wide ? { top: 40, bottom: 40, left: 460, right: 60 } : { top, bottom: Math.min(window.innerHeight * 0.55, sheet.visible() || window.innerHeight * 0.5) + 16, left: 40, right: 40 };
   }
@@ -893,7 +893,15 @@
         <div class="r">${ico('walk')}<span>Walk ${fmtDist(o.walkA * WALK_DETOUR)} (${mins(walkSecs(o.walkA))} min) to destination</span></div>
       </div>
       <div class="opt-next">${next}</div>
+      ${sel ? optionActions(o) : ''}
     </div>`;
+  }
+  function nextVehicle(o) { const n = o.nb && (o.nb.next || o.nb.first); return n ? n.vehicle : null; }
+  function optionActions(o) {
+    const id = nextVehicle(o);
+    return `<div class="actions" style="margin:12px 0 0">
+      ${id && S.buses.has(id) ? `<button class="btn primary" data-act="follow-bus" data-id="${esc(id)}">${ico('follow')}Follow next bus</button>` : ''}
+      <button class="btn" data-act="opt-back">All options</button></div>`;
   }
 
   function legChips(p) {
@@ -970,13 +978,10 @@
     focusFilter = (bus) => bus.route_id === o.rid && liveForOption(o).some((x) => x.bus.id === bus.id);
     recomputeFocus();
     setFocus([...S.focus], `Route ${o.label}`, [o.rid]);
-    const nextId = o.nb && (o.nb.next || o.nb.first) && (o.nb.next || o.nb.first).vehicle;
+    const nextId = nextVehicle(o);
     renderDest(true);
-    // option-level actions under the selected card
     const card = ui.sheetBody.querySelector(`.card[data-i="${i}"][data-act="opt"]`);
-    if (card) card.insertAdjacentHTML('beforeend', `<div class="actions" style="margin:12px 0 0">
-      ${nextId ? `<button class="btn primary" data-act="follow-bus" data-id="${esc(nextId)}">${ico('follow')}Follow next bus</button>` : ''}
-      <button class="btn" data-act="opt-back">All options</button></div>`);
+    if (card) card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     const bus = nextId && S.buses.get(nextId);
     fitTo([R.origin, b, a, R.dest, bus && pos(bus.id, performance.now())], 16);
   }
@@ -1279,7 +1284,7 @@
       else { startFollow(t.dataset.id); t.classList.remove('primary'); t.classList.add('on'); t.lastChild.textContent = 'Following'; }
       return;
     }
-    if (act === 'follow-bus') { const b = S.buses.get(t.dataset.id); if (b) { openBus(b).then(() => startFollow(b.id)); } return; }
+    if (act === 'follow-bus') { const b = S.buses.get(t.dataset.id); if (b) { S.followId = b.id; openBus(b).then(() => startFollow(b.id)); } else toast('That bus is not reporting right now'); return; }
     if (act === 'route') { if (t.dataset.rid) { ui.q.value = `Route ${routeLabel(t.dataset.rid)}`; setSearchMode(true); ui.qClear.classList.remove('hidden'); showRoute(t.dataset.rid); } return; }
     if (act === 'share') {
       const url = `${location.origin}${location.pathname}#bus=${encodeURIComponent(t.dataset.id)}`;
@@ -1445,6 +1450,8 @@
   /* =============================== 11. boot + deep links =============================== */
   // start the first vehicle fetch while the map style is still loading
   const firstData = refresh();
+  // don't hold the boot screen for slow tiles: once data and the style are in, show the app
+  firstData.then(() => { const done = () => ui.boot.classList.add('gone'); if (map.isStyleLoaded()) done(); else map.once('style.load', done); });
   map.on('load', async () => {
     addLayers();
     loadStops().then(() => map.getSource('stops').setData({ type: 'FeatureCollection', features: D.stopList.map((s) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [s.lon, s.lat] }, properties: { id: s.id, name: s.name } })) })).catch(() => {});
