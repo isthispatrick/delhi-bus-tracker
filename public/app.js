@@ -174,7 +174,7 @@
     attributionControl: false, pitchWithRotate: true, fadeDuration: 120, maxBounds: [[76.3, 27.9], [78.2, 29.4]],
   });
   window.map = map;
-  map.addControl(new mapboxgl.AttributionControl({ compact: true, customAttribution: 'Live: Delhi OTD · reclaim.city · Metro stations © OpenStreetMap · 3D bus: Innerscene (CC0)' }), 'bottom-right');
+  map.addControl(new mapboxgl.AttributionControl({ compact: true, customAttribution: 'Live: Delhi OTD · reclaim.city · Metro stations © OpenStreetMap · 3D: <a href="https://poly.pizza/m/fFCCghvRImG" target="_blank" rel="noopener">Montreal Bus</a> by Nick Ladd, <a href="https://poly.pizza/m/OWczicNWhO" target="_blank" rel="noopener">Bus Stop</a> by Zsky (CC-BY 3.0)' }), 'bottom-right');
   map.touchZoomRotate.disableRotation();
   ['dragstart', 'zoomstart', 'pitchstart', 'rotatestart'].forEach((ev) => map.on(ev, (e) => { if (e.originalEvent) { S.interacting = true; if (S.followId) stopFollow(true); } }));
   map.on('moveend', () => { S.interacting = false; refreshView(true); });
@@ -443,6 +443,7 @@
       ingest(list, labels);
       if (S.mode === 'bus' && S.selectedId) refreshBusSheet();
       if (S.mode === 'dest') updateDestLive();
+      checkAlert();
     } catch (e) {
       if (!e.benign) S.failures++;
     } finally {
@@ -630,9 +631,9 @@
     window.addEventListener('resize', () => sheet.set(sheet.state));
   })();
 
-  const head = (title, sub, lead) => `
+  const head = (title, sub, lead, acts) => `
     <div class="sh">${lead || ''}<div class="sh-main"><div class="sh-title">${title}</div>${sub ? `<div class="sh-sub">${sub}</div>` : ''}</div>
-    <button class="sh-close" data-act="close" aria-label="Close">${ico('x')}</button></div>`;
+    ${acts || ''}<button class="sh-close" data-act="close" aria-label="Close">${ico('x')}</button></div>`;
   const skeleton = (n) => Array.from({ length: n || 3 }, () => '<div class="skel card-sk"></div>').join('');
   const empty = (icon, title, sub, btn) => `<div class="empty"><div class="empty-ic">${ico(icon)}</div><div class="empty-t">${title}</div>${sub ? `<div class="empty-s">${sub}</div>` : ''}${btn || ''}</div>`;
   const badge = (label, cls, style) => `<span class="rb ${cls || ''}"${style ? ` style="${style}"` : ''}>${esc(label)}</span>`;
@@ -753,7 +754,9 @@
     hideSuggest(); ui.q.blur();
     if (it.type === 'route') { ui.q.value = `Route ${it.label}`; ui.qClear.classList.remove('hidden'); setSearchMode(true); showRoute(it.rid); return; }
     ui.q.value = it.name; ui.qClear.classList.remove('hidden'); setSearchMode(true);
-    goTo({ name: it.name, lat: it.lat, lon: it.lon, kind: it.kind, stop_id: it.stop_id });
+    const place = { name: it.name, lat: it.lat, lon: it.lon, kind: it.kind, stop_id: it.stop_id };
+    if (S.saving) { saveDest(place, S.saving); S.saving = null; ui.q.placeholder = 'Where to? Place or route no.'; }
+    goTo(place);
   }
 
   /* =============================== 6. destination: direct buses =============================== */
@@ -768,6 +771,7 @@
     if (!S.meMarker) { const el = document.createElement('div'); el.className = 'me-marker'; S.meMarker = new mapboxgl.Marker({ element: el }); }
     S.meMarker.setLngLat([loc.lon, loc.lat]).addTo(map);
     ui.btnLocate.classList.add('on');
+    setTimeout(refreshSavedWarnings, 0);
   }
   function locate(timeout) {
     return new Promise((resolve, reject) => {
@@ -876,11 +880,12 @@
     const vehicles = new Set(live.map((x) => x.bus.id));
     const preds = (arrivals || []).filter((a) => a.route_id === o.rid && (!vehicles.size || vehicles.has(a.vehicle_id) || !a.vehicle_id));
     const cand = [];
-    for (const a of preds) cand.push({ s: a.in_sec, live: true, vehicle: a.vehicle_id });
+    for (const a of preds) cand.push({ s: a.in_sec, live: true, vehicle: a.vehicle_id, delay: a.delay || 0 });
     for (const x of live) if (x.catchable && !preds.some((a) => a.vehicle_id === x.bus.id)) cand.push({ s: x.estS, live: false, vehicle: x.bus.id });
     cand.sort((a, b) => a.s - b.s);
     const ok = cand.find((c) => c.s >= walkS * 0.85) || null;
-    return { next: ok, first: cand[0] || null, headway: headwayMin(o.rid) };
+    const after = ok ? cand[cand.indexOf(ok) + 1] || null : null; // for bunching hints
+    return { next: ok, after, first: cand[0] || null, headway: headwayMin(o.rid) };
   }
 
   const destOnClose = (replaced) => { if (!replaced && (S.mode === 'dest' || S.mode === 'trip')) clearModes(); };
@@ -992,15 +997,29 @@
         <div class="r">${ico('bus')}<span>Get off at <b>${esc(alightStop.name)}</b></span></div>
         <div class="r">${ico('walk')}<span>Walk ${fmtDist(o.walkA * WALK_DETOUR)} (${mins(walkSecs(o.walkA))} min) to destination</span></div>
       </div>
-      <div class="opt-next">${next}</div>
+      <div class="opt-next">${next}<span class="fill"></span>${fareChip(busFare((o.rideM * BUS_DETOUR) / 1000))}</div>
+      ${optionHints(o)}
       ${sel ? optionActions(o) : ''}
     </div>`;
+  }
+  // delay vs timetable, bunching, last bus: one line each, only when there's something to say
+  function optionHints(o) {
+    const nb = o.nb || {}, out = [];
+    const d = nb.next && nb.next.live ? nb.next.delay : 0;
+    if (d >= 180) out.push(`<div class="hint late">${ico('clock')}<span>This ${esc(o.label)} is running ${Math.round(d / 60)} min late (vs timetable)</span></div>`);
+    else if (d <= -180) out.push(`<div class="hint muted">${ico('clock')}<span>This ${esc(o.label)} is ${Math.round(-d / 60)} min early (vs timetable)</span></div>`);
+    if (nb.next && nb.after && nb.after.s - nb.next.s < 180) out.push(`<div class="hint muted">${ico('bus')}<span>Two ${esc(o.label)}s are bunched together, ${fmtMin(nb.next.s)} and ${fmtMin(nb.after.s)} min away${nb.headway ? `; expect a longer gap after them` : ''}</span></div>`);
+    const lb = lastBusInfo(o.rid, o.g, o.bi);
+    if (lb) out.push(`<div class="hint ${lb.gone ? 'warn' : 'warn'}">${ico('warn')}<span>${lb.text}</span></div>`);
+    return out.join('');
   }
   function nextVehicle(o) { const n = o.nb && (o.nb.next || o.nb.first); return n ? n.vehicle : null; }
   function optionActions(o) {
     const id = nextVehicle(o);
-    return `<div class="actions" style="margin:12px 0 0">
+    const armed = alertState && alertState.rid === o.rid && alertState.stopIdx === o.bi && !alertState.busId;
+    return `<div class="actions" style="margin:12px 0 0;flex-wrap:wrap">
       ${id && S.buses.has(id) ? `<button class="btn primary" data-act="follow-bus" data-id="${esc(id)}">${ico('follow')}Follow next bus</button>` : ''}
+      <button class="btn ${armed ? 'on' : ''}" data-act="alert-opt">${ico('bell')}${armed ? 'Alert on' : 'Alert me'}</button>
       <button class="btn" data-act="opt-back">All options</button></div>`;
   }
 
@@ -1020,7 +1039,7 @@
       <div class="opt-top"><div style="flex:1;min-width:0"><div class="opt-legs" style="margin-top:0">${legChips(p)}</div>
         <div class="opt-arrive" style="margin-top:8px">${desc}${firstRide ? ` · from ${esc(firstRide.board.name)}` : ''}</div></div>
         <div class="eta"><div class="opt-time">${fmtMin(p.secs)}<small>min</small></div><div class="opt-arrive">arr ~${clock(arrive)}</div></div></div>
-      ${p.hasMetro ? `<div class="opt-next"><span class="tag sched">Metro scheduled</span><span>No live metro times. Buses are live.</span></div>` : ''}
+      <div class="opt-next">${p.hasMetro ? `<span class="tag sched">Metro scheduled</span><span>No live metro times.</span>` : '<span class="tag live">Live buses</span>'}<span class="fill"></span>${fareChip(fareOfLegs(p.legs))}</div>
     </div>`;
   }
 
@@ -1029,7 +1048,10 @@
     const { dest, opts, transfers } = R;
     const nLive = opts.reduce((n, o) => n + (o.live || []).length, 0);
     const sub = opts.length ? `${opts.length} direct bus${opts.length > 1 ? 'es' : ''} · ${nLive} live on the way` : 'No direct bus';
-    let html = head(`To ${esc(dest.name)}`, `From ${esc((R.origin && R.origin.name) || 'your location')} · ${sub}`, `<div class="sh-ic dest">${ico('pin')}</div>`);
+    const sv = findSaved(dest);
+    let html = head(`To ${esc(sv ? sv.label : dest.name)}`, `From ${esc((R.origin && R.origin.name) || 'your location')} · ${sub}`, `<div class="sh-ic dest">${ico('pin')}</div>`,
+      `<button class="sh-act ${sv ? 'on' : ''}" data-act="save-toggle" aria-label="${sv ? 'Remove saved place' : 'Save this place'}">${ico(sv ? 'star-fill' : 'star')}</button>`);
+    if (R.saving) html += saveRow();
     if (opts.length) {
       // a much faster metro/transfer route goes first, clearly labelled; buses stay the default otherwise
       const faster = transfers.map((p, i) => [p, i]).filter(([p]) => p.secs < opts[0].total - 600);
@@ -1044,7 +1066,7 @@
     } else {
       html += empty('bus', 'No bus route found', `Nothing within walking distance of you reaches ${esc(dest.name)}${R.metroOpen ? '' : ', and the metro is closed now'}. Try a nearby landmark or metro station.`);
     }
-    if (opts.length || transfers.length) html += `<div class="note">Times use live bus positions and predictions where available. Metro times are scheduled estimates, not live. Delhi traffic makes all times rough.</div>`;
+    if (opts.length || transfers.length) html += `<div class="note">Times use live bus positions and predictions where available. Metro times are scheduled estimates, not live. Fares are estimates from published DTC and DMRC slabs; women ride DTC and cluster buses free with a pink ticket / Saheli card. Delhi traffic makes all times rough.</div>`;
     const top = ui.sheetBody.scrollTop;
     sheet.update(soft ? html : `<div class="sheet-fade">${html}</div>`);
     ui.sheetBody.scrollTop = top;
@@ -1138,12 +1160,14 @@
         steps.push(`<div class="step" data-leg="${i}"><div class="step-rail"><div class="step-ic bus">${ico('bus')}</div><div class="step-line bus"></div></div>
           <div class="step-body"><div class="step-row" style="margin-top:0">${badge(l.label)}<span class="step-t">towards ${esc(l.headsign)}</span></div>
           <div class="step-s">Board at <b>${esc(l.board.name)}</b>, ride ${l.stops.length - 1} stops (~${mins(l.rideSecs)} min), get off at <b>${esc(l.alight.name)}</b></div>
-          <div class="step-row" data-live="${i}"><span class="spin"></span><span class="step-s" style="margin:0">Checking live buses…</span></div></div></div>`);
+          <div class="step-row" data-live="${i}"><span class="spin"></span><span class="step-s" style="margin:0">Checking live buses…</span></div>
+          <div class="step-row">${fareChip(busFare(legKm(l)))}${lastBusInfo(l.route_id, (patternGeom(l.route_id) || [])[0], 0) ? `<span class="hint warn" style="margin:0">${ico('warn')}<span>${lastBusInfo(l.route_id, (patternGeom(l.route_id) || [])[0], 0).text}</span></span>` : ''}</div></div></div>`);
       } else {
         steps.push(`<div class="step"><div class="step-rail"><div class="step-ic metro" style="background:${esc(l.color)};color:${inkFor(l.color)}">${ico('metro')}</div><div class="step-line" style="background:${esc(l.color)}"></div></div>
           <div class="step-body"><div class="step-row" style="margin-top:0">${metroBadge(l.label + ' Line', l.color)}<span class="tag sched">Scheduled</span></div>
           <div class="step-s" style="margin-top:6px">Towards <b>${esc(l.headsign)}</b>. Board at <b>${esc(l.board.name)}</b>, ${l.stops.length - 1} station${l.stops.length > 2 ? 's' : ''} (~${mins(l.rideSecs)} min), ${p.legs[i + 2] && p.legs[i + 2].type === 'metro' || (p.legs[i + 1] && p.legs[i + 1].type === 'metro') ? 'change at' : 'get off at'} <b>${esc(l.alight.name)}</b></div>
-          <div class="step-s">Trains typically every few minutes. No live metro times.</div></div></div>`);
+          <div class="step-s">Trains typically every few minutes. No live metro times.</div>
+          ${p.legs[i - 1] && p.legs[i - 1].type === 'metro' ? '' : `<div class="step-row">${fareChip(metroFareFor(p.legs, i))}</div>`}</div></div>`);
       }
     });
     steps.push(`<div class="step end"><div class="step-rail"><div class="step-ic">${ico('pin')}</div></div><div class="step-body"><div class="step-t">${esc(R ? R.dest.name : 'Destination')}</div><div class="step-s">Arrive around ${clock(arrive)}</div></div></div>`);
@@ -1242,13 +1266,40 @@
     if (p && !S.followId) map.easeTo({ center: [p.lon, p.lat], zoom: Math.max(map.getZoom(), 14), duration: 500, padding: sheetPadding() });
     await renderBusSheet(bus, true);
   }
+  // "Status" fact: delay vs timetable when the feed predicts this bus, else freshness of its position
+  function statusFact(ago, delay) {
+    let v = 'Live', c = 'var(--live)';
+    if (ago != null && ago > STALE_S) { v = 'No signal'; c = 'var(--warn)'; }
+    else if (delay != null && delay >= 180) { v = `${Math.round(delay / 60)} min late`; c = '#ff9b73'; }
+    else if (delay != null && delay <= -180) { v = `${Math.round(-delay / 60)} min early`; c = 'var(--t1)'; }
+    else if (delay != null) v = 'On time';
+    return `<div class="fact"><div class="k">Status</div><div class="v" style="color:${c}">${v}</div></div>`;
+  }
+  // bunching: the nearest buses of the same route and direction ahead of / behind this one
+  function busHints(bus, m, label) {
+    let ahead = null, behind = null;
+    for (const b of S.byRoute.get(bus.route_id) || []) {
+      if (b.id === bus.id) continue;
+      const mb = busDirection(b); if (!mb || mb.geom !== m.geom) continue;
+      const gap = mb.proj.along - m.proj.along;
+      if (gap > 0 && (!ahead || gap < ahead)) ahead = gap;
+      if (gap < 0 && (!behind || -gap < behind)) behind = -gap;
+    }
+    const mins = (d) => Math.max(1, Math.round((d * BUS_DETOUR) / BUS_MS / 60));
+    const out = [];
+    if (behind != null && behind < 350) out.push(`<div class="hint muted">${ico('bus')}<span>Bunched: another ${esc(label)} is right behind (${fmtDist(behind)})</span></div>`);
+    else if (ahead != null && ahead < 350) out.push(`<div class="hint muted">${ico('bus')}<span>Bunched: another ${esc(label)} is just ahead (${fmtDist(ahead)})</span></div>`);
+    else if (behind != null) out.push(`<div class="hint muted">${ico('bus')}<span>Next ${esc(label)} behind is about ${mins(behind)} min back</span></div>`);
+    else out.push(`<div class="hint muted">${ico('bus')}<span>No other ${esc(label)} behind this one right now</span></div>`);
+    return out.join('');
+  }
   async function refreshBusSheet() { const b = S.buses.get(S.selectedId); if (b && S.mode === 'bus') renderBusSheet(b, false); }
   async function renderBusSheet(bus, fresh) {
     if (busPredCache.id !== bus.id || Date.now() - busPredCache.at > 12000) {
       busPredCache = { id: bus.id, at: Date.now(), map: null };
       try {
         const d = await getJson(`/api/arrivals?vehicle_id=${encodeURIComponent(bus.id)}`);
-        if (d.updates && d.updates.length) { busPredCache.map = {}; for (const u of d.updates) busPredCache.map[u.stop_id] = u.t; }
+        if (d.updates && d.updates.length) { busPredCache.map = {}; for (const u of d.updates) busPredCache.map[u.stop_id] = u.t; busPredCache.delay = d.updates[0].delay || 0; }
       } catch { /* optional */ }
     }
     if (S.selectedId !== bus.id) return;
@@ -1275,9 +1326,13 @@
           if (i > nextIdx && g.pts[i - 1].name === pt.name) continue; // paired kerbside stops share a name
           const t = pred && pred[pt.id];
           const tt = t ? `<span class="tl-t live">${t - now < 45 ? 'Now' : `${fmtMin(t - now)} min`}</span>` : `<span class="tl-t dim">${fmtMin((dist * BUS_DETOUR) / BUS_MS)} min</span>`;
-          rows.push(`<div class="tl-row${i === nextIdx ? ' next' : ''}${i === g.pts.length - 1 ? ' end' : ''}"><div class="tl-dot"><i></i></div><div class="tl-name">${esc(pt.name)}</div>${tt}</div>`);
+          const bellOn = alertState && alertState.busId === bus.id && alertState.stopIdx === i;
+          const alight = S.alightPick && S.alightPick.busId === bus.id && S.alightPick.idx === i;
+          rows.push(`<div class="tl-row${i === nextIdx ? ' next' : ''}${i === g.pts.length - 1 ? ' end' : ''}${alight ? ' alight' : ''}" data-act="pick-alight" data-idx="${i}"><div class="tl-dot"><i></i></div><div class="tl-name">${esc(pt.name)}</div>${tt}<button class="tl-bell ${bellOn ? 'on' : ''}" data-act="alert-stop" data-idx="${i}" aria-label="Alert me 2 stops before ${esc(pt.name)}">${ico('bell')}</button></div>`);
         }
-        body += `<div class="sec">Next stops <span class="fill"></span>${pred ? '<span class="tag live">Live times</span>' : '<span class="tag est">Estimated</span>'}</div><div class="tl">${rows.join('')}</div>`;
+        body += busHints(bus, m, label);
+        body += `<div class="sec">Next stops <span class="fill"></span>${pred ? '<span class="tag live">Live times</span>' : '<span class="tag est">Estimated</span>'}</div><div class="tl">${rows.join('')}</div>
+          <div class="note" style="margin-top:6px">Tap a stop to set where you get off (for sharing). Tap ${ico('bell').replace('<svg', '<svg style="width:13px;height:13px;display:inline;vertical-align:-2px"')} to be alerted 2 stops before it.</div>`;
         if (!showAll && end < g.pts.length) body += `<button class="more" data-act="all-stops" data-id="${esc(bus.id)}">Show all ${g.pts.length - nextIdx} remaining stops</button>`;
       } else body += `<div class="note">Arriving at ${esc(g.to)}.</div>`;
     } else if (bus.route_id) body += `<div class="note">No stop data for this route, so only the live position is shown.</div>`;
@@ -1286,12 +1341,12 @@
       <div class="facts">
         <div class="fact"><div class="k">Speed</div><div class="v">${kmh != null ? `${kmh} km/h` : '—'}</div></div>
         <div class="fact"><div class="k">Updated</div><div class="v">${ago != null ? (ago < 90 ? `${ago}s ago` : `${Math.round(ago / 60)}m ago`) : '—'}</div></div>
-        <div class="fact"><div class="k">Status</div><div class="v" style="color:${ago != null && ago > STALE_S ? 'var(--warn)' : 'var(--live)'}">${ago != null && ago > STALE_S ? 'Delayed' : 'Live'}</div></div>
+        ${statusFact(ago, pred ? busPredCache.delay : null)}
       </div>
       <div class="actions">
         <button class="btn ${following ? 'on' : 'primary'}" data-act="follow" data-id="${esc(bus.id)}">${ico('follow')}<span>${following ? 'Following' : 'Follow'}</span></button>
         <button class="btn" data-act="route" data-rid="${esc(bus.route_id || '')}">${ico('route')}Route</button>
-        <button class="btn icon" data-act="share" data-id="${esc(bus.id)}" aria-label="Share link">${ico('share')}</button>
+        <button class="btn icon" data-act="share" data-id="${esc(bus.id)}" aria-label="Share trip">${ico('share')}</button>
       </div>${body}`;
     const top = ui.sheetBody.scrollTop;
     sheet.update(fresh ? `<div class="sheet-fade">${html}</div>` : html);
@@ -1306,8 +1361,9 @@
     const arr = ((await arrivalsForStops([stopId]))[stopId] || []).filter((a) => a.in_sec > -30);
     const seen = new Set(), out = [];
     for (const a of arr) {
-      if (seen.has(a.route_id)) continue; seen.add(a.route_id);
-      out.push({ rid: a.route_id, label: routeLabel(a.route_id) || a.route, s: a.in_sec, live: true, vehicle: a.vehicle_id, to: destNameFor(a.route_id, stopId) });
+      if (seen.has(a.route_id)) { const prev = out.find((x) => x.rid === a.route_id); if (prev && a.in_sec - prev.s < 180) prev.bunched = true; continue; }
+      seen.add(a.route_id);
+      out.push({ rid: a.route_id, label: routeLabel(a.route_id) || a.route, s: a.in_sec, live: true, vehicle: a.vehicle_id, to: destNameFor(a.route_id, stopId), delay: a.delay || 0 });
     }
     // add position-based estimates for routes with no prediction
     for (const rid of (D.stopRoutes && D.stopRoutes[stopId]) || []) {
@@ -1326,7 +1382,7 @@
     }
     return out.sort((a, b) => a.s - b.s).slice(0, limit || 6);
   }
-  const arrRow = (a) => `<div class="arr tap" data-act="bus" data-id="${esc(a.vehicle || '')}" style="cursor:pointer">${badge(a.label)}<div class="to"><div class="a">${a.to ? `To ${esc(a.to)}` : 'Live bus'}</div><div class="b">${a.live ? 'Live prediction' : 'Estimated from position'}</div></div><div class="eta">${etaHtml(a.s, a.live ? 'live' : '')}</div></div>`;
+  const arrRow = (a) => `<div class="arr tap" data-act="bus" data-id="${esc(a.vehicle || '')}" style="cursor:pointer">${badge(a.label)}<div class="to"><div class="a">${a.to ? `To ${esc(a.to)}` : 'Live bus'}</div><div class="b">${a.live ? 'Live' : 'Estimated'}${a.delay >= 180 ? ` · <span style="color:#ff9b73">${Math.round(a.delay / 60)} min late</span>` : a.delay <= -180 ? ` · ${Math.round(-a.delay / 60)} min early` : ''}${a.bunched ? ' · another right behind' : ''}</div></div><div class="eta">${etaHtml(a.s, a.live ? 'live' : '')}</div></div>`;
 
   async function openStop(stopId, name) {
     await loadPatterns().catch(() => {});
@@ -1390,12 +1446,14 @@
     }
     if (act === 'follow-bus') { const b = S.buses.get(t.dataset.id); if (b) { S.followId = b.id; openBus(b).then(() => startFollow(b.id)); } else toast('That bus is not reporting right now'); return; }
     if (act === 'route') { if (t.dataset.rid) { ui.q.value = `Route ${routeLabel(t.dataset.rid)}`; setSearchMode(true); ui.qClear.classList.remove('hidden'); showRoute(t.dataset.rid); } return; }
-    if (act === 'share') {
-      const url = `${location.origin}${location.pathname}#bus=${encodeURIComponent(t.dataset.id)}`;
-      if (navigator.share) navigator.share({ title: 'Live bus', url }).catch(() => {});
-      else navigator.clipboard.writeText(url).then(() => toast('Link copied'), () => toast(url));
-      return;
-    }
+    if (act === 'share') return shareTrip(t.dataset.id);
+    if (act === 'alert-stop') { e.stopPropagation(); const b = S.buses.get(S.selectedId); const m = b && busDirection(b); if (m) armAlert({ rid: b.route_id, di: m.geom.di, stopIdx: +t.dataset.idx, busId: b.id }); refreshBusSheet(); return; }
+    if (act === 'pick-alight') { const id = S.selectedId; const idx = +t.dataset.idx; S.alightPick = S.alightPick && S.alightPick.busId === id && S.alightPick.idx === idx ? null : { busId: id, idx }; refreshBusSheet(); return; }
+    if (act === 'alert-opt') { e.stopPropagation(); const o = S.results && S.results.opts[S.results.selected]; if (o) { if (alertState && alertState.rid === o.rid && alertState.stopIdx === o.bi && !alertState.busId) clearAlert(); else armAlert({ rid: o.rid, di: o.g.di, stopIdx: o.bi }); renderDest(true); } return; }
+    if (act === 'save-toggle') { const R = S.results; if (!R) return; const sv = findSaved(R.dest); if (sv) { removeSaved(sv.id); toast(`Removed ${sv.label}`); } else R.saving = !R.saving; renderDest(true); return; }
+    if (act === 'save-as') { const R = S.results; if (!R) return; const kind = t.dataset.kind; const name = kind === 'custom' ? (ui.sheetBody.querySelector('#save-name').value.trim() || R.dest.name) : null; saveDest(R.dest, kind, name); R.saving = false; renderDest(true); return; }
+    if (act === 'save-start') { startSaving(t.dataset.kind); return; }
+    if (act === 'install-ok') { sheet.close(); return; }
     if (act === 'all-stops') { ui.sheetBody.dataset.all = t.dataset.id; refreshBusSheet(); sheet.set('full'); return; }
     if (act === 'bus') { const b = S.buses.get(t.dataset.id); if (b) openBus(b); else toast('That bus is not reporting right now'); return; }
     if (act === 'stop') return openStop(t.dataset.id, t.dataset.name);
@@ -1629,6 +1687,239 @@
       paint: { 'fill-extrusion-color': '#1b222c', 'fill-extrusion-height': ['interpolate', ['linear'], ['zoom'], 14, 0, 14.4, ['get', 'height']], 'fill-extrusion-base': ['get', 'min_height'], 'fill-extrusion-opacity': 0.82 },
     }, 'trip-casing');
   }
+
+  /* =============================== 12. saved places, alerts, fares, sharing, install =============================== */
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode: in-memory only */ } },
+  };
+
+  /* --- fares: estimates from published slabs (README explains sources and reliability) --- */
+  // DTC / cluster buses by distance. Non-AC: Rs 5 up to 4 km, 10 up to 10 km, 15 beyond. AC: Rs 10 / 15 / 20 / 25.
+  // Which buses on a route are AC isn't in the feed, so both are shown.
+  const busFare = (km) => ({ nonAc: km <= 4 ? 5 : km <= 10 ? 10 : 15, ac: km <= 4 ? 10 : km <= 8 ? 15 : km <= 12 ? 20 : 25 });
+  // DMRC slabs from 25 Aug 2025 (weekday): Rs 11 / 21 / 32 / 43 / 54 / 64. Airport Express is dearer (up to Rs 75).
+  const metroFare = (km) => (km <= 2 ? 11 : km <= 5 ? 21 : km <= 12 ? 32 : km <= 21 ? 43 : km <= 32 ? 54 : 64);
+  const legKm = (l) => { let m = 0; for (let i = 1; i < l.stops.length; i++) m += hav(l.stops[i - 1].lat, l.stops[i - 1].lon, l.stops[i].lat, l.stops[i].lon); return (m * BUS_DETOUR) / 1000; };
+  // one metro fare per continuous metro journey (interchanges don't charge again)
+  function metroFareFor(legs, i) {
+    let km = 0, airport = false;
+    for (let j = i; j < legs.length && (legs[j].type === 'metro' || (legs[j].type === 'walk' && legs[j + 1] && legs[j + 1].type === 'metro' && legs[j].dist < 600)); j++) {
+      if (legs[j].type === 'metro') { km += Math.abs(legs[j].alongTo - legs[j].alongFrom) / 1000; if (/airport/i.test(legs[j].line_id || '')) airport = true; }
+    }
+    return { metro: metroFare(km), airport };
+  }
+  function fareOfLegs(legs) {
+    const f = { nonAc: 0, ac: 0, metro: 0, airport: false };
+    legs.forEach((l, i) => {
+      if (l.type === 'bus') { const b = busFare(legKm(l)); f.nonAc += b.nonAc; f.ac += b.ac; }
+      if (l.type === 'metro' && !(legs[i - 1] && legs[i - 1].type === 'metro') && !(legs[i - 2] && legs[i - 2].type === 'metro' && legs[i - 1].type === 'walk')) { const m = metroFareFor(legs, i); f.metro += m.metro; f.airport = f.airport || m.airport; }
+    });
+    return f;
+  }
+  function fareChip(f) {
+    const parts = [];
+    if (f.nonAc) parts.push(f.nonAc === f.ac ? `₹${f.ac}` : `₹${f.nonAc}–${f.ac} bus`);
+    if (f.metro) parts.push(`₹${f.metro}${f.airport ? '+' : ''} metro`);
+    return parts.length ? `<span class="fare" title="Estimated fare: non-AC to AC bus; metro by DMRC distance slab">${ico('rupee')}~${parts.join(' + ')}</span>` : '';
+  }
+
+  /* --- last bus: from the route's last departure + running time to your stop --- */
+  function lastBusInfo(rid, g, idx) {
+    const f = D.freq && D.freq[rid];
+    if (!f || !g) return null;
+    const hm = (x) => { const m = /^(\d+):(\d+)/.exec(x || ''); return m ? +m[1] * 60 + +m[2] : null; };
+    const first = hm(f[1]), last = hm(f[2]);
+    if (last == null) return null;
+    const offsetMin = Math.round(((g.cum[idx] || 0) * BUS_DETOUR / BUS_MS + BUS_DWELL * idx) / 60);
+    const lastHere = (last + offsetMin) % 1440;
+    const now = Planner.delhiMinutes();
+    let until = lastHere - now; if (until < -720) until += 1440; if (until > 720) until -= 1440;
+    const label = routeLabel(rid);
+    const at = `${String(Math.floor(lastHere / 60)).padStart(2, '0')}:${String(lastHere % 60).padStart(2, '0')}`;
+    if (until < -5) {
+      const firstHere = first == null ? null : (first + offsetMin) % 1440;
+      // only call it "over for today" late in the evening or at night
+      if (now > 19 * 60 || now < 5 * 60) return { gone: true, text: `No more ${esc(label)} from here today (last ~${at})${firstHere != null ? `; first tomorrow ~${String(Math.floor(firstHere / 60)).padStart(2, '0')}:${String(firstHere % 60).padStart(2, '0')}` : ''}` };
+      return null;
+    }
+    if (until <= 60) return { gone: false, text: `Last ${esc(label)} from here is around ${at}, in ${Math.max(1, until)} min` };
+    return null;
+  }
+
+  /* --- saved places (localStorage) --- */
+  const SAVED_KEY = 'dbt.saved.v1';
+  let saved = store.get(SAVED_KEY, []);
+  const KINDS = { home: { label: 'Home / PG', icon: 'home' }, college: { label: 'College', icon: 'college' }, custom: { icon: 'star-fill' } };
+  const findSaved = (p) => p && saved.find((x) => Math.abs(x.lat - p.lat) < 3e-4 && Math.abs(x.lon - p.lon) < 3e-4);
+  function saveDest(p, kind, name) {
+    if (kind !== 'custom') saved = saved.filter((x) => x.kind !== kind); // one Home, one College
+    saved = saved.filter((x) => !(Math.abs(x.lat - p.lat) < 3e-4 && Math.abs(x.lon - p.lon) < 3e-4));
+    const label = kind === 'custom' ? (name || p.name) : KINDS[kind].label;
+    saved.push({ id: String(Date.now()), kind, label, name: p.name, lat: p.lat, lon: p.lon });
+    store.set(SAVED_KEY, saved); renderSavedChips(); refreshSavedWarnings();
+    toast(`Saved as ${label}`);
+  }
+  function removeSaved(id) { saved = saved.filter((x) => x.id !== id); store.set(SAVED_KEY, saved); renderSavedChips(); }
+  const saveRow = () => `<div class="save-row">
+      <button class="chip" data-act="save-as" data-kind="home">${ico('home')}Home / PG</button>
+      <button class="chip" data-act="save-as" data-kind="college">${ico('college')}College</button>
+      <input id="save-name" placeholder="Other: name it" maxlength="24" /><button class="chip" data-act="save-as" data-kind="custom">${ico('plus')}Save</button>
+    </div>`;
+  function renderSavedChips() {
+    const el = $('saved-chips');
+    const order = { home: 0, college: 1, custom: 2 };
+    const list = saved.slice().sort((a, b) => order[a.kind] - order[b.kind]);
+    el.innerHTML = list.map((x) => `<button class="chip saved" data-saved="${esc(x.id)}" title="${esc(x.name)}">${ico(KINDS[x.kind].icon)}${esc(x.label)}${x.warn ? '<span class="warn-dot" title="Last bus soon"></span>' : ''}</button>`).join('')
+      + (list.some((x) => x.kind === 'home') && list.some((x) => x.kind === 'college') ? '' : `<button class="chip add" data-saved-add>${ico('plus')}${list.length ? 'Add place' : 'Save Home / College'}</button>`);
+  }
+  $('saved-chips').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-saved]');
+    if (b) { const x = saved.find((y) => y.id === b.dataset.saved); if (x) { clearModes(); ui.q.value = x.label; setSearchMode(true); ui.qClear.classList.remove('hidden'); goTo({ name: x.name, lat: x.lat, lon: x.lon }); } return; }
+    if (e.target.closest('[data-saved-add]')) {
+      clearModes();
+      sheet.open(`${head('Save your places', 'One tap shows which bus to take right now', `<div class="sh-ic">${ico('star')}</div>`)}
+        <div class="actions" style="flex-direction:column"><button class="btn primary" data-act="save-start" data-kind="home">${ico('home')}Set Home / PG</button>
+        <button class="btn" data-act="save-start" data-kind="college">${ico('college')}Set College</button></div>
+        <div class="note">Or search any place and tap ${ico('star').replace('<svg', '<svg style="width:13px;height:13px;display:inline;vertical-align:-2px"')} on its results to save it. Places stay on this phone only.</div>`, 'half');
+    }
+  });
+  function startSaving(kind) {
+    S.saving = kind; sheet.close();
+    ui.q.placeholder = `Search your ${KINDS[kind].label} address`; ui.q.value = ''; ui.q.focus();
+  }
+  // last-bus warnings on the chips (needs your location and the route data)
+  function refreshSavedWarnings() {
+    if (!S.userLoc || !D.patterns || !D.freq || !saved.length) return;
+    for (const x of saved) {
+      const opts = directOptions(S.userLoc, x);
+      x.warn = opts.length ? Boolean(lastBusInfo(opts[0].rid, opts[0].g, opts[0].bi)) : false;
+    }
+    renderSavedChips();
+  }
+
+  /* --- "your bus is 2 stops away" alert ---
+     In-app alert + a local system notification while the app is open (or briefly in the background on
+     Android). Not server web push: that needs a push service and a server watching buses around the clock. */
+  const ALERT_KEY = 'dbt.alert.v1';
+  let alertState = store.get(ALERT_KEY, null);
+  if (alertState && Date.now() - alertState.created > 2 * 3600 * 1000) alertState = null;
+  function armAlert({ rid, di, stopIdx, busId }) {
+    const g = (patternGeom(rid) || []).find((x) => x.di === di);
+    if (!g) return;
+    alertState = { rid, di, stopIdx, busId: busId || null, stopName: g.pts[stopIdx].name, label: routeLabel(rid), created: Date.now(), fired: null };
+    store.set(ALERT_KEY, alertState);
+    if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission().catch(() => {});
+    toast(`We'll alert you when ${busId ? 'this bus' : `a ${alertState.label}`} is 2 stops from ${alertState.stopName}`);
+    renderAlertBar(); checkAlert();
+  }
+  function clearAlert() { alertState = null; store.set(ALERT_KEY, null); renderAlertBar(); }
+  function checkAlert() {
+    const a = alertState;
+    if (!a || a.fired || !D.patterns) return;
+    if (Date.now() - a.created > 2 * 3600 * 1000) return clearAlert();
+    const g = (patternGeom(a.rid) || []).find((x) => x.di === a.di);
+    if (!g) return;
+    const stopAt = g.cum[a.stopIdx];
+    let best = null, passed = false;
+    for (const b of a.busId ? [S.buses.get(a.busId)].filter(Boolean) : S.byRoute.get(a.rid) || []) {
+      const m = busDirection(b); if (!m || m.geom !== g) continue;
+      const along = m.proj.along;
+      if (along > stopAt + 30) { if (a.busId) passed = true; continue; }
+      let nextIdx = g.cum.findIndex((c) => c > along + 20); if (nextIdx < 0) continue;
+      const away = a.stopIdx - nextIdx + 1; // stops left including yours
+      if (!best || away < best.away) best = { away, bus: b };
+    }
+    a.status = best ? `${best.away} stop${best.away === 1 ? '' : 's'} away` : a.busId && passed ? 'already passed' : 'no bus on the way yet';
+    if (best && best.away <= 2) {
+      a.fired = { busId: best.bus.id, at: Date.now(), away: best.away };
+      store.set(ALERT_KEY, a);
+      notify(`${a.label} is ${best.away <= 1 ? 'next at' : '2 stops from'} ${a.stopName}`, best.away <= 1 ? 'It is about to reach your stop.' : 'Head to the stop now.', best.bus.id);
+    }
+    renderAlertBar();
+  }
+  async function notify(title, body, busId) {
+    // browsers only allow vibration after the user has interacted with the page
+    try { if (navigator.vibrate && (!navigator.userActivation || navigator.userActivation.hasBeenActive)) navigator.vibrate([250, 120, 250]); } catch { /* no vibration */ }
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    const data = { url: `/#bus=${encodeURIComponent(busId)}` };
+    try {
+      const reg = navigator.serviceWorker && (await navigator.serviceWorker.getRegistration());
+      if (reg) await reg.showNotification(title, { body, icon: '/icons/icon-192.png', badge: '/icons/icon-192.png', tag: 'bus-alert', renotify: true, data });
+      else new Notification(title, { body, icon: '/icons/icon-192.png' });
+    } catch { /* the in-app banner still shows */ }
+  }
+  function renderAlertBar() {
+    const el = $('alertbar'), a = alertState;
+    if (!a) { el.className = 'hidden'; el.innerHTML = ''; return; }
+    if (a.fired) {
+      el.className = 'fired';
+      el.innerHTML = `<div class="ab-ic">${ico('bell')}</div><div class="ab-txt"><b>${esc(a.label)} is ${a.fired.away <= 1 ? 'next at' : '2 stops from'} ${esc(a.stopName)}</b><div class="ab-sub">Head to the stop now</div></div><button data-ab="show">Show</button><button data-ab="done">Done</button>`;
+    } else {
+      el.className = '';
+      el.innerHTML = `<div class="ab-ic">${ico('bell')}</div><div class="ab-txt"><b>${esc(a.label)}</b> → ${esc(a.stopName)}<div class="ab-sub">Alert 2 stops before · ${esc(a.status || 'watching')}</div></div><button data-ab="done">Cancel</button>`;
+    }
+  }
+  $('alertbar').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-ab]'); if (!b) return;
+    if (b.dataset.ab === 'done') return clearAlert();
+    if (b.dataset.ab === 'show' && alertState && alertState.fired) { const bus = S.buses.get(alertState.fired.busId); if (bus) openBus(bus); }
+  });
+  setInterval(checkAlert, 5000);
+
+  /* --- share trip --- */
+  async function shareTrip(busId) {
+    const bus = S.buses.get(busId); if (!bus) return;
+    const label = routeLabel(bus.route_id) || bus.route;
+    const m = busDirection(bus);
+    let off = null;
+    if (m) {
+      const g = m.geom;
+      let idx = S.alightPick && S.alightPick.busId === busId ? S.alightPick.idx : null;
+      if (idx == null && S.results) { const o = S.results.opts.find((x) => x.g === g); if (o) idx = o.ai; }
+      if (idx != null && g.cum[idx] > m.proj.along) {
+        const pt = g.pts[idx];
+        const t = busPredCache.id === busId && busPredCache.map && busPredCache.map[pt.id];
+        const etaS = t ? t - Date.now() / 1000 : ((g.cum[idx] - m.proj.along) * BUS_DETOUR) / BUS_MS;
+        off = { name: pt.name, at: clock(new Date(Date.now() + etaS * 1000)) };
+      }
+    }
+    const url = `${location.origin}/#bus=${encodeURIComponent(busId)}`;
+    const text = off ? `I'm on bus ${label}${m ? ` towards ${m.geom.to}` : ''}, getting off at ${off.name} around ${off.at}.`
+      : `I'm on bus ${label}${m ? ` towards ${m.geom.to}` : ''}.`;
+    const msg = `${text} Track it live:`;
+    if (navigator.share) { try { await navigator.share({ title: `Bus ${label}`, text: msg, url }); return; } catch (e) { if (e && e.name === 'AbortError') return; } }
+    try { await navigator.clipboard.writeText(`${msg} ${url}`); toast('Trip copied. Paste it in any chat'); }
+    catch { window.open(`https://wa.me/?text=${encodeURIComponent(`${msg} ${url}`)}`, '_blank', 'noopener'); }
+  }
+
+  /* --- install (PWA) --- */
+  const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  let installEvt = null;
+  if ('serviceWorker' in navigator) {
+    const reg = () => navigator.serviceWorker.register('/sw.js').catch(() => {});
+    if (document.readyState === 'complete') reg(); else window.addEventListener('load', reg); // this code runs after async boot steps
+  }
+  window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; $('chip-install').classList.remove('hidden'); });
+  window.addEventListener('appinstalled', () => { $('chip-install').classList.add('hidden'); toast('Installed. Open Delhi Bus from your home screen'); });
+  if (isIOS && !isStandalone() && !store.get('dbt.installHintDone', false)) $('chip-install').classList.remove('hidden');
+  $('chip-install').addEventListener('click', async () => {
+    if (installEvt) { installEvt.prompt(); const r = await installEvt.userChoice.catch(() => null); if (r && r.outcome === 'accepted') $('chip-install').classList.add('hidden'); installEvt = null; return; }
+    store.set('dbt.installHintDone', true);
+    sheet.open(`${head('Add Delhi Bus to your Home Screen', 'Opens full screen, like an app', `<div class="sh-ic">${ico('install')}</div>`)}
+      <div class="install-steps">
+        <div><span class="n">1</span>Tap ${ico('share').replace('<svg', '<svg style="width:18px;height:18px;display:inline;vertical-align:-3px"')} Share in Safari's toolbar</div>
+        <div><span class="n">2</span>Scroll and tap <b>Add to Home Screen</b></div>
+        <div><span class="n">3</span>Tap <b>Add</b>. Bus alerts work best from the installed app.</div>
+      </div>
+      <div class="actions" style="margin-top:16px"><button class="btn primary" data-act="install-ok">Got it</button></div>`, 'half');
+  });
+  if (isStandalone()) $('chip-install').classList.add('hidden');
+
+  renderSavedChips();
+  renderAlertBar();
+  loadNet().then(refreshSavedWarnings).catch(() => {});
 
   /* =============================== 11. boot + deep links =============================== */
   // start the first vehicle fetch while the map style is still loading

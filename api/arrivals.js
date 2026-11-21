@@ -13,7 +13,8 @@ function arrivalsFor(data, stopIds, now) {
     for (const u of t.updates) {
       if (!want.has(u.stop_id)) continue;
       if (u.t < now - 60) continue; // already left
-      out[u.stop_id].push({ route_id: t.route_id, route: routeLabel(t.route_id), vehicle_id: t.vehicle_id, eta: u.t, in_sec: u.t - now });
+      // delay: seconds vs the timetable the feed predicts against (+ late, - early)
+      out[u.stop_id].push({ route_id: t.route_id, route: routeLabel(t.route_id), vehicle_id: t.vehicle_id, eta: u.t, in_sec: u.t - now, delay: u.delay || 0 });
     }
   }
   for (const id of Object.keys(out)) out[id] = out[id].sort((a, b) => a.eta - b.eta).slice(0, 12);

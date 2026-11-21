@@ -13,7 +13,7 @@ if (fs.existsSync(envPath)) {
   }
 }
 
-const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml' };
+const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json', '.glb': 'model/gltf-binary' };
 const apis = {
   '/api/vehicles': require('./api/vehicles'),
   '/api/stops': require('./api/stops'),
