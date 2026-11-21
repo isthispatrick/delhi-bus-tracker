@@ -20,7 +20,7 @@
     attributionControl: false,
   });
   window.map = map;
-  map.addControl(new mapboxgl.AttributionControl({ compact: true, customAttribution: '3D bus model: <a href="https://tevy.dev/models/city-bus" target="_blank">Low-Floor City Bus</a> by tevy (CC0)' }), 'bottom-right');
+  map.addControl(new mapboxgl.AttributionControl({ compact: true, customAttribution: '3D bus model: <a href="https://www.innerscene.com/tools/library/3d-parts/low-poly-city-bus-49c04273" target="_blank">Low-poly City Bus</a> by Innerscene (CC0)' }), 'bottom-right');
 
   /* ---------------- state ---------------- */
   let buses = [];                 // latest bus array from api
@@ -622,7 +622,7 @@
     });
 
     /* ---------------- 3D bus models (instanced, zoom-gated) ----------------
-       Model: "Low-Floor City Bus" by tevy.dev, CC0-1.0 (no attribution required; credit kept anyway).
+       Model: "Low-poly City - Bus" by Innerscene, CC0 (https://www.innerscene.com/tools/library/3d-parts/low-poly-city-bus-49c04273).
        Renders as a real 3D bus at zoom >= 13.5; green dots stay below that. */
     const BUS3D_MIN_ZOOM = 13.5;
     const bus3d = { ready: false, instances: [], max: 4000, renderedVersion: -1 };
@@ -644,7 +644,7 @@
         const mc = mapboxgl.MercatorCoordinate.fromLngLat({ lng: b.lon, lat: b.lat }, 0);
         const sc = mc.meterInMercatorCoordinateUnits();
         q.setFromAxisAngle(upAxis, toRad(b.bearing || 0));
-        p.set(mc.x, mc.y, 0); s.set(sc, sc, sc);
+        p.set(mc.x, mc.y, 0); s.set(sc * 1.35, sc * 1.35, sc * 1.35); // model is a ~7.9m minibus; ~11m reads better on the map
         m.compose(p, q, s).multiply(_rxBase);
         for (const im of bus3d.instances) im.setMatrixAt(i, m2.copy(m).multiply(im.userData.local));
       }
@@ -653,7 +653,7 @@
     const bus3dLayer = {
       id: 'buses-3d', type: 'custom', renderingMode: '3d',
       onAdd(mapInst, gl) {
-        _rxBase = new THREE.Matrix4().makeRotationX(Math.PI / 2); // model up +Y -> world up +Z
+        _rxBase = new THREE.Matrix4().makeRotationZ(-Math.PI / 2).multiply(new THREE.Matrix4().makeRotationX(Math.PI / 2)); // model: up +Y, forward +X -> world: up +Z, forward north
         this.camera = new THREE.Camera();
         this.scene = new THREE.Scene();
         this.scene.add(new THREE.HemisphereLight(0xf4f7ff, 0x2a3442, 1.15));

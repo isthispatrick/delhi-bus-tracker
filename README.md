@@ -33,5 +33,5 @@ Delhi has no true arrival-prediction system for buses. Next-bus times come from 
 
 ## Credits
 
-- 3D bus model: "Low-Floor City Bus" by tevy (https://tevy.dev/models/city-bus), licensed CC0 1.0 (public domain). Sourced 2026-11-21, LOD2 variant (public/bus.glb).
+- 3D bus model: "Low-poly City - Bus" by Innerscene (https://www.innerscene.com/tools/library/3d-parts/low-poly-city-bus-49c04273), licensed CC0. Sourced 2026-11-21 (public/bus.glb).
 - Live data: Delhi OTD open data feed; reclaim.city mirror for shapes/stop data.
