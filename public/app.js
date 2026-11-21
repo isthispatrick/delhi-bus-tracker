@@ -771,18 +771,25 @@
   }
   // Locate: fly to the user, tilt up and slowly orbit around them, Google Earth style.
   // The orbit runs until they touch the map, press the locate button again, follow a bus or toggle 3D.
-  let orbitOn = false;
+  let orbitOn = false, orbitRaf = 0, orbitLast = 0;
+  function orbitStep(now) {
+    if (!orbitOn) return;
+    map.setBearing(map.getBearing() + (now - orbitLast) * 0.016); // 16 deg/s: one turn every 22.5 s
+    orbitLast = now;
+    orbitRaf = requestAnimationFrame(orbitStep);
+  }
   function stopOrbit() {
     if (!orbitOn) return;
     orbitOn = false;
+    cancelAnimationFrame(orbitRaf);
     ui.btnLocate.classList.remove('orbit');
-    map.stop();
   }
   function startOrbit() {
+    if (orbitOn) return;
     orbitOn = true;
     ui.btnLocate.classList.add('orbit');
-    // one long slow spin (22.5 s per revolution); map.stop() on any interaction ends it
-    map.rotateTo(map.getBearing() + 3600, { duration: 225000, easing: (t) => t });
+    orbitLast = performance.now();
+    orbitRaf = requestAnimationFrame(orbitStep);
   }
   ui.btnLocate.addEventListener('click', async () => {
     if (orbitOn) { stopOrbit(); return; }
