@@ -662,7 +662,9 @@
         this.scene.add(sun);
         this.renderer = new THREE.WebGLRenderer({ canvas: mapInst.getCanvas(), context: gl, antialias: true });
         this.renderer.autoClear = false;
-        new THREE.GLTFLoader().load('/bus.glb', (gltf) => {
+        const loader = new THREE.GLTFLoader();
+        if (window.MeshoptDecoder) loader.setMeshoptDecoder(window.MeshoptDecoder);
+        loader.load('/bus.glb', (gltf) => {
           gltf.scene.updateMatrixWorld(true);
           const meshes = [];
           gltf.scene.traverse((o) => { if (o.isMesh) meshes.push(o); });
