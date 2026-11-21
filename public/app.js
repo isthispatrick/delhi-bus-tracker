@@ -300,7 +300,7 @@
      are ignored. */
   const T = new Map(); // id -> {fixes:[{ts,rts,lat,lon}], brg, v, lag, lagT, gaps}
   let animating = true;
-  const LAG_MIN = 15, LAG_MAX = 150, LAG_UP = 0.6, LAG_DOWN = 0.15; // s of delay change per s
+  const LAG_MIN = 15, LAG_MAX = 90, LAG_UP = 0.6, LAG_DOWN = 0.15; // s of delay change per s
 
   function lerpAngle(a, b, f) { const d = ((b - a + 540) % 360) - 180; return (a + d * f + 360) % 360; }
   const brgOf = (aLat, aLon, bLat, bLon) => ((Math.atan2((bLon - aLon) * Math.cos(toRad(aLat)), bLat - aLat) * 180) / Math.PI + 360) % 360;
@@ -380,7 +380,7 @@
         if (b.bearing) t.brg = b.bearing;
         // this bus's delay: how late its fixes arrive + the longest recent gap between them (+ a poll), so the
         // replay point stays between two real fixes even when a snapshot is missed
-        if (prev) { t.gaps = (t.gaps || []).concat(Math.min(90, Math.max(5, fixTs - prev.rts))).slice(-4); }
+        if (prev) { t.gaps = (t.gaps || []).concat(Math.min(60, Math.max(5, fixTs - prev.rts))).slice(-4); }
         const gap = t.gaps && t.gaps.length ? Math.max(...t.gaps) : 20;
         const target = Math.max(LAG_MIN, Math.min(LAG_MAX, (nowS - fixTs) + gap + REFRESH_MS / 1000 * 0.5 + 3));
         t.lagT = t.lagSeen ? Math.max(target, 0.7 * t.lagT + 0.3 * target) : target; // rise at once, fall slowly
