@@ -86,14 +86,14 @@ Metro stations come from OpenStreetMap and are snapped onto reclaim's line geome
 Delhi has no true arrival-prediction system for buses. Next-bus times come from GTFS-RT trip updates (reclaim mirror), marked **Live**, or from the bus's position along its route, marked **Est**. "Late/early" compares the trip update with the timetable it predicts against. Metro times are typical scheduled estimates. Treat all times as rough.
 
 ## 3D models and licences
-- **Bus**: "Montreal Bus" by Nick Ladd, via Poly Pizza (https://poly.pizza/m/fFCCghvRImG), **CC-BY 3.0**. `public/models/bus.glb`. At load it is turned onto the heading axis, mirrored so the door is on the left (India drives on the left), wheel hubs dropped (3.8k triangles) and recoloured Delhi orange with a charcoal skirt.
-- **Bus-stop shelter**: "Bus Stop" by Zsky, via Poly Pizza (https://poly.pizza/m/OWczicNWhO), **CC-BY 3.0**. `public/models/stop-shelter.glb`, recoloured.
+- **Bus**: "Ikarus 260" by Rail Island, via Rail Island Factory (https://factory.railisland.com/model/proc-vehicle-ikarus-260/), **CC0 1.0** (public domain). `public/models/bus.glb`. A procedural model generated with the open-source rail-island-factory generator and exported as GLB; at load it is turned onto the heading axis, mirrored so the doors are on the left (India drives on the left) and recoloured Delhi orange. ~7.7k triangles. This is the free, licensed stand-in for the Ikarus 260 that was asked for on Sketchfab.
+- **Bus-stop shelter**: "Bus Stop Shelter" by Grab3D (https://grab3d.com/models/city/bus-stop-shelter/), **CC0 1.0** (public domain, downloaded without a login). `public/models/stop-shelter.glb`. An enclosed glass shelter with a bench, the free stand-in for the paid Sketchfab pick; recoloured at load (its baked textures are ignored by the flat-shading pipeline).
 - Both are credited in the map's attribution control.
 - **Requested but not usable**: the Ikarus 260 on Sketchfab (sketchfab.com/3d-models/ikarus-260-9bbae33d58e54499981649420aaa7b17, by 7NML) has **no licence granted and downloads are disabled**; the "Bus Stop Shelter – Low Poly" (by MSWoodvine) is a **paid Sketchfab Standard (store) licence**, not a free download. Both download endpoints return 401 without a login. If the owner buys the shelter or gets the Ikarus author's permission, drop the GLB into `public/models/` and set its axes in `MODELS` (`public/app.js`).
 - Rendering: one draw call per material, all instances share one matrix buffer, only buses in (padded) view and up to 900 stops nearest the centre are drawn, and everything is rendered relative to the map centre for float precision. Measured CPU per frame with 5,400 live buses: 0.31 ms at zoom 13.8, 0.06 ms at 16.2.
 
 ## Credits
-- 3D bus: "Montreal Bus" by Nick Ladd (CC-BY 3.0, via Poly Pizza). 3D shelter: "Bus Stop" by Zsky (CC-BY 3.0, via Poly Pizza). Both recoloured. (Earlier builds used "Low-poly City - Bus" by Innerscene, CC0.)
+- 3D bus: "Ikarus 260" by Rail Island (CC0 1.0, via Rail Island Factory). 3D shelter: "Bus Stop Shelter" by Grab3D (CC0 1.0). Both recoloured. (Earlier builds used "Montreal Bus" by Nick Ladd and "Bus Stop" by Zsky, CC-BY 3.0 via Poly Pizza, and "Low-poly City - Bus" by Innerscene, CC0.)
 - App icons: drawn by `scripts/make-icons.js`.
 - Live data: Delhi Open Transit Data (IIIT-Delhi / Delhi Transport Dept); reclaim.city public mirror for positions, trip updates, route/stop data, timings and metro line geometry.
 - Metro stations and searchable places: © OpenStreetMap contributors, ODbL.

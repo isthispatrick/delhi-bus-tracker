@@ -174,7 +174,7 @@
     attributionControl: false, pitchWithRotate: true, fadeDuration: 120, maxBounds: [[76.3, 27.9], [78.2, 29.4]],
   });
   window.map = map;
-  map.addControl(new mapboxgl.AttributionControl({ compact: true, customAttribution: 'Live: Delhi OTD · reclaim.city · Metro stations © OpenStreetMap · 3D: <a href="https://poly.pizza/m/fFCCghvRImG" target="_blank" rel="noopener">Montreal Bus</a> by Nick Ladd, <a href="https://poly.pizza/m/OWczicNWhO" target="_blank" rel="noopener">Bus Stop</a> by Zsky (CC-BY 3.0)' }), 'bottom-right');
+  map.addControl(new mapboxgl.AttributionControl({ compact: true, customAttribution: 'Live: Delhi OTD · reclaim.city · Metro stations © OpenStreetMap · 3D: <a href="https://factory.railisland.com/model/proc-vehicle-ikarus-260/" target="_blank" rel="noopener">Ikarus 260</a> by Rail Island, <a href="https://grab3d.com/models/city/bus-stop-shelter/" target="_blank" rel="noopener">Bus Stop Shelter</a> by Grab3D (CC0 1.0)' }), 'bottom-right');
   map.touchZoomRotate.disableRotation();
   ['dragstart', 'zoomstart', 'pitchstart', 'rotatestart'].forEach((ev) => map.on(ev, (e) => { if (e.originalEvent) { S.interacting = true; if (S.followId) stopFollow(true); } }));
   map.on('moveend', () => { S.interacting = false; refreshView(true); });
@@ -1480,22 +1480,26 @@
   });
 
   /* =============================== 10. 3D buses and stop shelters =============================== */
-  // Bus: "Montreal Bus" by Nick Ladd (Poly Pizza, CC-BY 3.0): a low-floor city bus like Delhi's DTC / cluster fleet.
-  //   The source sits diagonally with its door on the right (North America); it is turned onto the heading axis,
-  //   mirrored so the door is on the left as in India, and recoloured Delhi orange.
-  // Shelter: "Bus Stop" by Zsky (Poly Pizza, CC-BY 3.0), recoloured.
-  // (The Ikarus 260 and the Sketchfab shelter that were asked for carry no reusable licence: see README.)
+  // Bus: "Ikarus 260" by Rail Island (Rail Island Factory, CC0 1.0): the classic Hungarian city bus, close to the
+  //   Sketchfab Ikarus 260 that was asked for (that one carries no reusable licence). Procedurally generated,
+  //   exported as GLB. Source faces +X (tail lights at x=0); mirrored so the doors are on the left as in India.
+  // Shelter: "Bus Stop Shelter" by Grab3D (CC0 1.0): enclosed glass shelter with bench, close to the paid
+  //   Sketchfab pick. Opening faces the road.
   // Canonical frame after normalising: front -X, up +Y, left +Z, unit length, standing on y = 0.
   const MODELS = {
     bus: {
-      url: '/models/bus.glb', forward: [-1.69, 0, 1.58], up: [0, 1, 0], mirror: true, drop: ['mat22'], // mat22: wheel hubs (detail we can't see)
-      // source colours: mat21 white body, mat15 grey skirt, mat5 blue livery, mat12 yellow chevrons, mat23 black, mat17/25 glass, mat13 amber, mat8/14 red
-      colors: { mat21: [0xff6a1f], mat15: [0x33373d], mat5: [0xc2410c], mat12: [0xffe0bd], mat23: [0x16181b], mat17: [0x1b2531, 0x0a131d],
-        mat25: [0x2a3b4c, 0x0c1622], mat13: [0xffb000, 0x6a4000], mat8: [0xff3b30, 0x9a1810], mat14: [0xff3b30, 0x9a1810] },
+      url: '/models/bus.glb', forward: [1, 0, 0], up: [0, 1, 0], mirror: true, drop: [],
+      colors: { body: [0xff6a1f], archTrim: [0xc2410c], bumper: [0x33373d], frame: [0x33373d], under: [0x16181b], rub: [0x33373d],
+        rubber: [0x16181b], chrome: [0xb8c0c8], grille: [0x8a939c], hub: [0x6f7a88], nut: [0x6f7a88], rim: [0xd7dde3],
+        glass: [0x1b2531, 0x0a131d], glassDark: [0x12181f, 0x080d12], pod: [0x33373d],
+        lampAmber: [0xffb000, 0x6a4000], lampHead: [0xfff3c0, 0x8a7a40], lampRed: [0xff3b30, 0x9a1810], reflector: [0xff3b30, 0x9a1810],
+        marker: [0xffb000, 0x6a4000], plate: [0xf2f2f2], sign: [0x16181b], signText: [0xffb000, 0x6a4000], white: [0xf2f2f2] },
     },
     shelter: {
-      url: '/models/stop-shelter.glb', forward: [1, 0, 0], up: [0, 0, 1], mirror: false, drop: [],
-      colors: { BlueBusStop: [0x6f7a88], LightBlue_BusStop: [0xa8c6d6, 0x16242c] },
+      url: '/models/stop-shelter.glb', forward: [1, 0, 0], up: [0, 1, 0], mirror: true, drop: [],
+      colors: { 'bus-stop-shelter_body_pbr': [0x6f7a88], 'bus-stop-shelter_glass_clear': [0xa8c6d6, 0x16242c],
+        'bus-stop-shelter_glass_frit': [0xc3d5dd, 0x1c2a32], 'bus-stop-shelter_bench_pbr': [0x8a6b4a],
+        'bus-stop-shelter_info_light': [0xf5f0dc, 0x6a6448] },
     },
   };
   const ZSHELTER = 15.2;      // shelters (3D) from this zoom; flat stop dots between 13.5 and here
