@@ -285,8 +285,7 @@
   /* =============================== 3. feed + motion =============================== */
   const REFRESH_MS = 10000;            // the CDN holds a snapshot for ~5 s; poll a little slower than that
   const STALE_S = 180;                 // a position older than this is drawn dimmed and not animated
-  const EXTRAP_S = 40;                 // past the newest fix, keep moving along the route at the last speed this long
-  const EXTRAP_FREE_S = 20;            // ...or this long straight ahead when the bus isn't matched to a route
+  const EXTRAP_S = 25;                 // past the newest fix, keep moving along its heading at the last speed this long
   const BLEND_MS = 600;                // ease the drawn bus onto the model (hides small corrections)
   const CHASE_MS = 10;                 // a large correction is chased at about this many m/s, never snapped
 
@@ -294,52 +293,33 @@
      GPS fixes reach us 25-40 s after they were taken (some buses much later) and each bus reports every
      10-120 s. So every bus is drawn `lag` seconds in the past, where its lag ~ how late its fixes arrive plus
      how often it reports. That moment almost always falls between two real fixes: the bus is interpolated
-     along its route between them, so it moves continuously, never jumps and never overshoots. If no newer
-     fix exists yet it keeps going at its last speed for up to EXTRAP_S, then holds. A bus's lag drifts
+     straight between them (consecutive GPS fixes are on the road, 10-30 s apart), so it moves continuously,
+     never jumps and never overshoots. If no newer fix exists yet it keeps going along its heading at its
+     last speed for up to EXTRAP_S, then holds. A bus's lag drifts
      slowly (<= LAG_DRIFT s per s) so a change never makes it lurch. Older fixes (another server instance)
      are ignored. */
-  const T = new Map(); // id -> {fixes:[{ts,lat,lon,along}], g, brg, v}
+  const T = new Map(); // id -> {fixes:[{ts,rts,lat,lon}], brg, v, lag, lagT, gaps}
   let animating = true;
   const LAG_MIN = 15, LAG_MAX = 150, LAG_UP = 0.6, LAG_DOWN = 0.15; // s of delay change per s
 
   function lerpAngle(a, b, f) { const d = ((b - a + 540) % 360) - 180; return (a + d * f + 360) % 360; }
   const brgOf = (aLat, aLon, bLat, bLon) => ((Math.atan2((bLon - aLon) * Math.cos(toRad(aLat)), bLat - aLat) * 180) / Math.PI + 360) % 360;
-  function pointAlong(g, d) {
-    let lo = 1, hi = g.cum.length - 1;
-    if (d <= 0) d = 0;
-    if (d >= g.cum[hi]) d = g.cum[hi];
-    while (lo < hi) { const mid = (lo + hi) >> 1; if (g.cum[mid] < d) lo = mid + 1; else hi = mid; }
-    const a = g.pts[lo - 1], b = g.pts[lo], f = Math.min(1, (d - g.cum[lo - 1]) / ((g.cum[lo] - g.cum[lo - 1]) || 1));
-    return { lat: a.lat + (b.lat - a.lat) * f, lon: a.lon + (b.lon - a.lon) * f, b: brgOf(a.lat, a.lon, b.lat, b.lon) };
-  }
-  function alongFor(t, lat, lon) {
-    if (!t.g) return null;
-    const pr = projectOnGeom(lat, lon, t.g);
-    return pr.dist < 120 ? pr.along : null;
-  }
-  function matchTrack(t, bus) {
-    if (!D.patterns) return;
-    t.matched = true;
-    const m = busDirection(bus);
-    const g = m && m.proj.dist < 80 ? m.geom : null;
-    if (g !== t.g) { t.g = g; for (const f of t.fixes) f.along = alongFor(t, f.lat, f.lon); }
-  }
   function modelAt(t, td) {
     const F = t.fixes, n = F.length;
     if (td <= F[0].ts || n === 1 && td <= F[0].ts + 0.01) return { lat: F[0].lat, lon: F[0].lon, b: t.brg };
     for (let i = n - 2; i >= 0; i--) {
       const a = F[i], c = F[i + 1];
       if (td >= a.ts && td <= c.ts) {
+        // straight between consecutive GPS fixes: they are on the road and only 10-30 s apart. (Route geometry
+        // here is stop-to-stop straight lines, which would cut through blocks.)
         const f = (td - a.ts) / ((c.ts - a.ts) || 1);
-        if (t.g && a.along != null && c.along != null && c.along >= a.along && c.along - a.along < 4000) return pointAlong(t.g, a.along + (c.along - a.along) * f);
         const d = hav(a.lat, a.lon, c.lat, c.lon);
         return { lat: a.lat + (c.lat - a.lat) * f, lon: a.lon + (c.lon - a.lon) * f, b: d > 5 ? brgOf(a.lat, a.lon, c.lat, c.lon) : t.brg };
       }
     }
-    // beyond the newest fix: short extrapolation at the last speed
-    const L = F[n - 1], dt = Math.min(td - L.ts, t.g && L.along != null ? EXTRAP_S : EXTRAP_FREE_S), dist = t.v * dt;
+    // beyond the newest fix: keep going straight along the last heading at the last speed, briefly
+    const L = F[n - 1], dt = Math.min(td - L.ts, EXTRAP_S), dist = t.v * dt;
     if (dist < 0.5) return { lat: L.lat, lon: L.lon, b: t.brg };
-    if (t.g && L.along != null) return pointAlong(t.g, L.along + dist);
     const r = toRad(t.brg);
     return { lat: L.lat + (dist * Math.cos(r)) / 111320, lon: L.lon + (dist * Math.sin(r)) / (111320 * Math.cos(toRad(L.lat))), b: t.brg };
   }
@@ -353,7 +333,6 @@
   function pos(id, now) {
     const t = T.get(id);
     if (!t || !t.fixes.length) return null;
-    if (!t.matched && D.patterns) { const bus = S.buses.get(id); if (bus) matchTrack(t, bus); }
     if (t.dAt != null && now - t.dAt > 2500) t.lagAt = null; // was off-screen: jump straight to its target delay
     if (t.lagAt == null) t.lag = t.lagT;
     const p = modelAt(t, displayTime(t, now));
@@ -385,12 +364,12 @@
         t = { fixes: [], g: null, brg: b.bearing || 0, v: 0, dlat: null, lag: 45, lagT: 45, lagAt: null };
         T.set(b.id, t);
         // seed with the server's previous fix so the bus moves from the first frame
-        if (b.prev && b.prev.ts < fixTs && hav(b.prev.lat, b.prev.lon, b.lat, b.lon) < 2500) t.fixes.push({ ts: b.prev.ts, rts: b.prev.ts, lat: b.prev.lat, lon: b.prev.lon, along: null });
+        if (b.prev && b.prev.ts < fixTs && hav(b.prev.lat, b.prev.lon, b.lat, b.lon) < 2500) t.fixes.push({ ts: b.prev.ts, rts: b.prev.ts, lat: b.prev.lat, lon: b.prev.lon });
       }
       if (!last || fixTs > last.rts) {
         if (last && hav(last.lat, last.lon, b.lat, b.lon) > 2500) { t.fixes = []; t.dlat = null; } // teleport: start over
         const prev = t.fixes[t.fixes.length - 1];
-        t.fixes.push({ ts: fixTs, rts: fixTs, lat: b.lat, lon: b.lon, along: null });
+        t.fixes.push({ ts: fixTs, rts: fixTs, lat: b.lat, lon: b.lon });
         while (t.fixes.length > 8) t.fixes.shift();
         if (prev) {
           const d = hav(prev.lat, prev.lon, b.lat, b.lon), dts = Math.max(1, fixTs - prev.rts);
@@ -406,10 +385,6 @@
         const target = Math.max(LAG_MIN, Math.min(LAG_MAX, (nowS - fixTs) + gap + REFRESH_MS / 1000 * 0.5 + 3));
         t.lagT = t.lagSeen ? Math.max(target, 0.7 * t.lagT + 0.3 * target) : target; // rise at once, fall slowly
         t.lagSeen = true;
-        t.matched = false;
-        matchTrack(t, b);
-        const nf = t.fixes[t.fixes.length - 1];
-        nf.along = alongFor(t, nf.lat, nf.lon);
       }
       if (nowS - fixTs > STALE_S) t.v = 0;
       else ages.push(nowS - fixTs);
