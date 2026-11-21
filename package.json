@@ -2,14 +2,17 @@
   "name": "delhi-bus-tracker",
   "version": "0.1.0",
   "private": true,
-  "description": "Live Delhi bus tracker on a Mapbox map, powered by Delhi Open Transit Data (GTFS-RT)",
+  "description": "Live Delhi bus tracker with destination search and a walk + bus + metro trip planner, on Mapbox, powered by Delhi Open Transit Data (GTFS-RT)",
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "prepare-data": "node scripts/prepare-data.js"
+    "prepare-data": "node scripts/prepare-data.js",
+    "prepare-reclaim": "node scripts/prepare-reclaim.js",
+    "prepare-metro": "node scripts/prepare-metro.js",
+    "prepare-planner": "node scripts/prepare-planner.js",
+    "check-planner": "node scripts/check-planner.js"
   },
   "dependencies": {
     "gtfs-realtime-bindings": "^1.1.1"
   }
 }
-
