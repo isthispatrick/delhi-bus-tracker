@@ -265,7 +265,7 @@
         'icon-allow-overlap': true, 'icon-ignore-placement': true,
       },
       paint: { 'icon-opacity': ['interpolate', ['linear'], ['zoom'], 12.2, 0, 12.6, 1] } });
-    map.addLayer({ id: 'bus-label', type: 'symbol', source: 'buses', minzoom: 13.2,
+    map.addLayer({ id: 'bus-label', type: 'symbol', source: 'buses', minzoom: 13.2, filter: ['!=', ['get', 'r'], ''],
       layout: {
         'text-field': ['get', 'r'], 'text-size': 11.5, 'text-font': ['DIN Pro Bold', 'Arial Unicode MS Bold'],
         'icon-image': 'chip', 'icon-text-fit': 'both', 'icon-text-fit-padding': [1, 4, 1, 4],
