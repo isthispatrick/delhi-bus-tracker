@@ -1,12 +1,16 @@
-const { getVehicles } = require('../lib/feed');
+// GET /api/vehicles          verbose payload: {demo, count, updated, buses:[...]} plus source/stale/errors
+// GET /api/vehicles?v=2      compact payload used by the app (see compact() in lib/feed.js)
+const { getVehicles, compact } = require('../lib/feed');
 
 module.exports = async (req, res) => {
   try {
+    const url = new URL(req.url, 'http://localhost');
     const payload = await getVehicles();
-    res.setHeader('Cache-Control', 'public, max-age=8');
-    res.status(200).json(payload);
+    // CDN keeps a copy for 8 s and serves it while revalidating: one upstream fetch per window for everyone
+    res.setHeader('Cache-Control', payload.demo || payload.stale ? 'no-store' : 'public, max-age=5, s-maxage=8, stale-while-revalidate=20');
+    res.status(200).json(url.searchParams.get('v') === '2' ? compact(payload) : payload);
   } catch (e) {
-    res.status(500).json({ error: String(e.message || e) });
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(500).json({ error: 'vehicles unavailable' });
   }
 };
-
