@@ -514,8 +514,9 @@
     }
   }
 
+  let camLockUntil = 0; // pause follow-centering while a camera animation (3D toggle) plays
   function followTick(now) {
-    if (S.interacting) return;
+    if (S.interacting || now < camLockUntil) return;
     const p = pos(S.followId, now);
     if (!p) return;
     const c = map.getCenter();
@@ -1661,6 +1662,7 @@
 
   function set3D(on, jump) {
     S.is3D = on;
+    camLockUntil = performance.now() + 1000; // followTick's setCenter would cancel this easeTo
     ui.btn3d.classList.toggle('on', on); ui.btn3d.setAttribute('aria-pressed', on);
     if (on) {
       if (!map.getLayer('3d-buildings')) addBuildings();
