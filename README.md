@@ -1,5 +1,9 @@
 # Delhi Bus Tracker
 
+Live at https://bus.shreyanshs.xyz
+
+![Delhi Bus Tracker](docs/screenshot.png)
+
 Live map of Delhi's buses with a destination search and a walk + bus + metro trip planner. Built on the Delhi government's Open Transit Data (GTFS-RT) feed and Mapbox. Static frontend, no framework; small Node API on Vercel.
 
 ## What it does
@@ -98,3 +102,7 @@ Delhi has no true arrival-prediction system for buses. Next-bus times come from 
 - Live data: Delhi Open Transit Data (IIIT-Delhi / Delhi Transport Dept); reclaim.city public mirror for positions, trip updates, route/stop data, timings and metro line geometry.
 - Metro stations and searchable places: © OpenStreetMap contributors, ODbL.
 - Maps and place search: Mapbox.
+
+## License
+
+Code is MIT (see `LICENSE`). The 3D models and data sources keep their own licences, listed in the credits above. This project is not affiliated with DTC, DMRC or the Government of Delhi; positions and times are best-effort estimates and not for safety-critical use.
