@@ -224,8 +224,10 @@
 
     // bus stops (zoomed in)
     map.addSource('stops', { type: 'geojson', data: EMPTY });
-    map.addLayer({ id: 'stops', type: 'circle', source: 'stops', minzoom: 14.5,
-      paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 14.5, 2.5, 18, 5.5], 'circle-color': '#d6dde6', 'circle-stroke-color': '#0b0f14', 'circle-stroke-width': 1.5, 'circle-opacity': 0.85 } });
+    // stop dots between z13.5 and the 3D shelters; they stay (invisible) above that as tap targets
+    map.addLayer({ id: 'stops', type: 'circle', source: 'stops', minzoom: 13.5,
+      paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 13.5, 2.5, 15, 4.5, 16, 9, 18, 16], 'circle-color': '#e6ebf1', 'circle-stroke-color': '#0b0f14', 'circle-stroke-width': 1.5,
+        'circle-opacity': ['interpolate', ['linear'], ['zoom'], 13.5, 0, 13.8, 0.9], 'circle-stroke-opacity': ['interpolate', ['linear'], ['zoom'], 13.5, 0, 13.8, 1] } });
 
     // focused route / trip legs
     map.addSource('trip', { type: 'geojson', data: EMPTY });
@@ -1412,15 +1414,15 @@
     hideSuggest();
     const p = e.point, r = 14;
     const box = [[p.x - r, p.y - r], [p.x + r, p.y + r]];
-    const hits = map.queryRenderedFeatures(box, { layers: ['bus-hit'] });
-    if (hits.length) {
-      let best = null, bd = Infinity;
-      for (const h of hits) { const pt = map.project(h.geometry.coordinates); const d = (pt.x - p.x) ** 2 + (pt.y - p.y) ** 2; if (d < bd) { bd = d; best = h; } }
-      const bus = S.buses.get(best.properties.id);
-      if (bus) return openBus(bus);
+    // nearest of any bus or stop under the finger wins (buses get a small head start)
+    let best = null, bd = Infinity;
+    for (const h of map.queryRenderedFeatures(box, { layers: ['bus-hit', 'stops'] })) {
+      const pt = map.project(h.geometry.coordinates);
+      const d = (pt.x - p.x) ** 2 + (pt.y - p.y) ** 2 - (h.layer.id === 'bus-hit' ? 40 : 0);
+      if (d < bd) { bd = d; best = h; }
     }
-    const st = map.queryRenderedFeatures(box, { layers: ['stops'] });
-    if (st.length) return openStop(String(st[0].properties.id), st[0].properties.name);
+    if (best && best.layer.id === 'bus-hit') { const bus = S.buses.get(best.properties.id); if (bus) return openBus(bus); }
+    if (best && best.layer.id === 'stops') return openStop(String(best.properties.id), best.properties.name);
     const ms = map.queryRenderedFeatures(box, { layers: ['metro-stations'] });
     if (ms.length) { const f = ms[0]; const [lon, lat] = f.geometry.coordinates; ui.q.value = f.properties.name; setSearchMode(true); ui.qClear.classList.remove('hidden'); return goTo({ name: f.properties.name, lat, lon, kind: 'M' }); }
   });
@@ -1430,106 +1432,186 @@
     map.getCanvas().style.cursor = n ? 'pointer' : '';
   });
 
-  /* =============================== 10. 3D buses =============================== */
-  // Model: "Low-poly City - Bus" by Innerscene, CC0. Front is -X (headlights), up is +Y, door side +Z (left, as in India).
-  const bus3d = { ready: false, max: 1200, groups: [], matAttr: null, alpha: 0 };
-  const PARTS = [
-    [/passenger[ _]volume/i, { color: 0xff6a1f }],
-    [/lower[ _]body/i, { color: 0xc94b12 }],
-    [/window|glass/i, { color: 0x1c2733, emissive: 0x0d1724 }],
-    [/bumper|door/i, { color: 0x2a2f36 }],
-    [/headlight/i, { color: 0xfff3d1, emissive: 0xfff0c0 }],
-    [/rear[ _]lamp/i, { color: 0xff3b30, emissive: 0xc81e14 }],
-    [/tyre/i, { color: 0x15171a }],
-    [/hub/i, { color: 0x9aa3ad }],
-  ];
+  /* =============================== 10. 3D buses and stop shelters =============================== */
+  // Bus: "Montreal Bus" by Nick Ladd (Poly Pizza, CC-BY 3.0): a low-floor city bus like Delhi's DTC / cluster fleet.
+  //   The source sits diagonally with its door on the right (North America); it is turned onto the heading axis,
+  //   mirrored so the door is on the left as in India, and recoloured Delhi orange.
+  // Shelter: "Bus Stop" by Zsky (Poly Pizza, CC-BY 3.0), recoloured.
+  // (The Ikarus 260 and the Sketchfab shelter that were asked for carry no reusable licence: see README.)
+  // Canonical frame after normalising: front -X, up +Y, left +Z, unit length, standing on y = 0.
+  const MODELS = {
+    bus: {
+      url: '/models/bus.glb', forward: [-1.69, 0, 1.58], up: [0, 1, 0], mirror: true, drop: ['mat22'], // mat22: wheel hubs (detail we can't see)
+      // source colours: mat21 white body, mat15 grey skirt, mat5 blue livery, mat12 yellow chevrons, mat23 black, mat17/25 glass, mat13 amber, mat8/14 red
+      colors: { mat21: [0xff6a1f], mat15: [0x33373d], mat5: [0xc2410c], mat12: [0xffe0bd], mat23: [0x16181b], mat17: [0x1b2531, 0x0a131d],
+        mat25: [0x2a3b4c, 0x0c1622], mat13: [0xffb000, 0x6a4000], mat8: [0xff3b30, 0x9a1810], mat14: [0xff3b30, 0x9a1810] },
+    },
+    shelter: {
+      url: '/models/stop-shelter.glb', forward: [1, 0, 0], up: [0, 0, 1], mirror: false, drop: [],
+      colors: { BlueBusStop: [0x6f7a88], LightBlue_BusStop: [0xa8c6d6, 0x16242c] },
+    },
+  };
+  const ZSHELTER = 15.2;      // shelters (3D) from this zoom; flat stop dots between 13.5 and here
+  const bus3d = { ready: false, max: 1500, groups: [], matAttr: null };
+  const stop3d = { ready: false, max: 900, groups: [], matAttr: null, list: [] };
+  const mppAt = (z) => (78271.5 * Math.cos(toRad(28.6))) / 2 ** z;
   function busLenMeters(z) {
-    const mpp = (78271.5 * Math.cos(toRad(28.6))) / 2 ** z;
     const px = Math.max(22, Math.min(44, 22 + (z - Z3D) * 5.5));
-    return Math.max(12, px * mpp);  // a readable icon when zoomed out, true 12 m bus when close
+    return Math.max(12, px * mppAt(z));  // a readable icon when zoomed out, a true 12 m bus when close
   }
+  const shelterLenMeters = (z) => Math.max(6, Math.max(16, Math.min(30, 16 + (z - ZSHELTER) * 5)) * mppAt(z));
+
+  // load a GLB, turn it into the canonical frame and merge it into one geometry per material
+  function loadModel(cfg) {
+    return new Promise((resolve, reject) => new THREE.GLTFLoader().load(cfg.url, (gltf) => {
+      gltf.scene.updateMatrixWorld(true);
+      const up = new THREE.Vector3(...cfg.up).normalize();
+      const f = new THREE.Vector3(...cfg.forward); f.sub(up.clone().multiplyScalar(f.dot(up))).normalize();
+      const left = new THREE.Vector3().crossVectors(up, f).multiplyScalar(cfg.mirror ? -1 : 1);
+      const M = new THREE.Matrix4().set(-f.x, -f.y, -f.z, 0, up.x, up.y, up.z, 0, left.x, left.y, left.z, 0, 0, 0, 0, 1);
+      const flip = M.determinant() < 0;
+      const byMat = new Map();
+      gltf.scene.traverse((o) => {
+        if (!o.isMesh) return;
+        const name = (o.material && o.material.name) || '';
+        if (cfg.drop.includes(name)) return;
+        const g = (o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone());
+        g.applyMatrix4(o.matrixWorld); g.applyMatrix4(M);
+        const P = g.attributes.position.array, N = g.attributes.normal.array;
+        if (flip) for (let i = 0; i < P.length; i += 9) for (let k = 0; k < 3; k++) { // mirrored: restore winding
+          let t = P[i + 3 + k]; P[i + 3 + k] = P[i + 6 + k]; P[i + 6 + k] = t;
+          t = N[i + 3 + k]; N[i + 3 + k] = N[i + 6 + k]; N[i + 6 + k] = t;
+        }
+        if (!byMat.has(name)) byMat.set(name, { P: [], N: [] });
+        byMat.get(name).P.push(P); byMat.get(name).N.push(N);
+      });
+      const cat = (arrs) => { const n = arrs.reduce((a, x) => a + x.length, 0), out = new Float32Array(n); let o = 0; for (const a of arrs) { out.set(a, o); o += a.length; } return out; };
+      const parts = [...byMat].map(([name, v]) => ({ name, P: cat(v.P), N: cat(v.N) }));
+      const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+      for (const p of parts) for (let i = 0; i < p.P.length; i += 3) for (let k = 0; k < 3; k++) { mn[k] = Math.min(mn[k], p.P[i + k]); mx[k] = Math.max(mx[k], p.P[i + k]); }
+      const L = mx[0] - mn[0], cx = (mn[0] + mx[0]) / 2, cz = (mn[2] + mx[2]) / 2;
+      for (const p of parts) for (let i = 0; i < p.P.length; i += 3) { p.P[i] = (p.P[i] - cx) / L; p.P[i + 1] = (p.P[i + 1] - mn[1]) / L; p.P[i + 2] = (p.P[i + 2] - cz) / L; }
+      resolve(parts.map(({ name, P, N }) => {
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(P, 3));
+        geo.setAttribute('normal', new THREE.BufferAttribute(N, 3));
+        const [color, emissive] = cfg.colors[name] || [0x888888];
+        return { geo, mat: new THREE.MeshLambertMaterial({ color, emissive: emissive || 0, side: THREE.DoubleSide }) };
+      }));
+    }, undefined, reject));
+  }
+  function instance(target, parts, scene) {
+    target.matAttr = new THREE.InstancedBufferAttribute(new Float32Array(target.max * 16), 16);
+    target.matAttr.setUsage(THREE.DynamicDrawUsage);
+    for (const { geo, mat } of parts) {
+      const im = new THREE.InstancedMesh(geo, mat, target.max);
+      im.instanceMatrix = target.matAttr; im.count = 0; im.frustumCulled = false;
+      scene.add(im); target.groups.push(im);
+    }
+    target.ready = true;
+  }
+  // write one instance: canonical model -> mercator, facing `bearing` (deg), uniform scale k
+  function putInstance(arr, n, mc, o, bearing, k) {
+    const h = toRad(bearing), s = Math.sin(h), cs = Math.cos(h), off = n * 16;
+    // columns: model X -> backwards, model Y -> up, model Z -> left of heading (mercator y points south)
+    arr[off] = -s * k; arr[off + 1] = cs * k; arr[off + 2] = 0; arr[off + 3] = 0;
+    arr[off + 4] = 0; arr[off + 5] = 0; arr[off + 6] = k; arr[off + 7] = 0;
+    arr[off + 8] = -cs * k; arr[off + 9] = -s * k; arr[off + 10] = 0; arr[off + 11] = 0;
+    arr[off + 12] = mc.x - o.x; arr[off + 13] = mc.y - o.y; arr[off + 14] = 0; arr[off + 15] = 1;
+  }
+  function setAlpha(groups, a) {
+    const fading = a < 1;
+    for (const im of groups) {
+      if (im.material.transparent !== fading) { im.material.transparent = fading; im.material.needsUpdate = true; }
+      im.material.opacity = a;
+    }
+  }
+
   const bus3dLayer = {
     id: 'buses-3d', type: 'custom', renderingMode: '3d',
     onAdd(m, gl) {
       this.camera = new THREE.Camera();
       this.scene = new THREE.Scene();
-      const hemi = new THREE.HemisphereLight(0xffffff, 0x8a909c, 0.78); hemi.position.set(0, 0, 1); this.scene.add(hemi);
-      const sun = new THREE.DirectionalLight(0xfff6ea, 0.42); sun.position.set(-0.6, 0.5, 0.9); this.scene.add(sun);
+      const hemi = new THREE.HemisphereLight(0xffffff, 0x8a909c, 0.8); hemi.position.set(0, 0, 1); this.scene.add(hemi);
+      const sun = new THREE.DirectionalLight(0xfff6ea, 0.45); sun.position.set(-0.6, 0.5, 0.9); this.scene.add(sun);
       this.renderer = new THREE.WebGLRenderer({ canvas: m.getCanvas(), context: gl, antialias: true });
       this.renderer.autoClear = false;
-      new THREE.GLTFLoader().load('/bus.glb', (gltf) => {
-        gltf.scene.updateMatrixWorld(true);
-        const buckets = PARTS.map(() => []);
-        gltf.scene.traverse((o) => {
-          if (!o.isMesh) return;
-          const i = PARTS.findIndex(([re]) => re.test(o.name));
-          if (i >= 0) buckets[i].push(o);
-        });
-        // one shared instance-matrix buffer for every part: 8 draw calls for all buses
-        bus3d.matAttr = new THREE.InstancedBufferAttribute(new Float32Array(bus3d.max * 16), 16);
-        bus3d.matAttr.setUsage(THREE.DynamicDrawUsage);
-        buckets.forEach((meshes, i) => {
-          if (!meshes.length) return;
-          const pos = [], nor = [];
-          for (const mesh of meshes) {
-            const g = mesh.geometry.index ? mesh.geometry.toNonIndexed() : mesh.geometry.clone();
-            g.applyMatrix4(mesh.matrixWorld);
-            pos.push(g.attributes.position.array); nor.push(g.attributes.normal.array);
-          }
-          const cat = (arrs) => { const n = arrs.reduce((a, x) => a + x.length, 0), out = new Float32Array(n); let o = 0; for (const a of arrs) { out.set(a, o); o += a.length; } return out; };
-          const geo = new THREE.BufferGeometry();
-          geo.setAttribute('position', new THREE.BufferAttribute(cat(pos), 3));
-          geo.setAttribute('normal', new THREE.BufferAttribute(cat(nor), 3));
-          const mat = new THREE.MeshLambertMaterial({ color: PARTS[i][1].color, emissive: PARTS[i][1].emissive || 0x000000, side: THREE.DoubleSide, transparent: false });
-          const im = new THREE.InstancedMesh(geo, mat, bus3d.max);
-          im.instanceMatrix = bus3d.matAttr;
-          im.count = 0; im.frustumCulled = false;
-          this.scene.add(im);
-          bus3d.groups.push(im);
-        });
-        bus3d.ready = true;
+      loadModel(MODELS.bus).then((parts) => {
+        instance(bus3d, parts, this.scene);
         // hand the high zooms over to the models
         map.setPaintProperty('bus-marker', 'icon-opacity', ['interpolate', ['linear'], ['zoom'], 12.2, 0, 12.6, 1, Z3D - 0.25, 1, Z3D + 0.25, 0]);
         map.triggerRepaint();
-      }, undefined, () => { /* model failed: 2D markers stay at every zoom */ });
+      }).catch(() => { /* model failed: 2D markers stay at every zoom */ });
+      loadModel(MODELS.shelter).then((parts) => {
+        instance(stop3d, parts, this.scene);
+        map.setPaintProperty('stops', 'circle-opacity', ['interpolate', ['linear'], ['zoom'], 13.5, 0, 13.8, 0.9, ZSHELTER - 0.2, 0.9, ZSHELTER + 0.2, 0]);
+        map.setPaintProperty('stops', 'circle-stroke-opacity', ['interpolate', ['linear'], ['zoom'], 13.5, 0, 13.8, 1, ZSHELTER - 0.2, 1, ZSHELTER + 0.2, 0]);
+        refreshStops3d(); map.triggerRepaint();
+      }).catch(() => { /* shelters failed: stop dots stay */ });
     },
     render(gl, matrix) {
-      if (!bus3d.ready) return;
       const z = map.getZoom();
-      const a = Math.max(0, Math.min(1, (z - (Z3D - 0.25)) / 0.5));
-      if (a <= 0) return;
+      const aBus = bus3d.ready ? Math.max(0, Math.min(1, (z - (Z3D - 0.25)) / 0.5)) : 0;
+      const aStop = stop3d.ready ? Math.max(0, Math.min(1, (z - (ZSHELTER - 0.2)) / 0.4)) : 0;
+      if (aBus <= 0 && aStop <= 0) return;
       const now = performance.now();
-      const c = map.getCenter();
-      const o = mapboxgl.MercatorCoordinate.fromLngLat(c, 0);
+      const o = mapboxgl.MercatorCoordinate.fromLngLat(map.getCenter(), 0);
       const unit = o.meterInMercatorCoordinateUnits();
-      const k = (busLenMeters(z) / 7.9) * unit * (0.85 + 0.15 * a);
-      const arr = bus3d.matAttr.array;
-      let n = 0;
-      for (const id of viewIds) {
-        if (n >= bus3d.max) break;
-        const p = pos(id, now); if (!p) continue;
-        const mc = mapboxgl.MercatorCoordinate.fromLngLat({ lng: p.lon, lat: p.lat }, 0);
-        const h = toRad(p.b), s = Math.sin(h), cs = Math.cos(h), off = n * 16;
-        // columns: model X -> backwards, model Y -> up, model Z -> left of heading (mercator y points south)
-        arr[off] = -s * k; arr[off + 1] = cs * k; arr[off + 2] = 0; arr[off + 3] = 0;
-        arr[off + 4] = 0; arr[off + 5] = 0; arr[off + 6] = k; arr[off + 7] = 0;
-        arr[off + 8] = -cs * k; arr[off + 9] = -s * k; arr[off + 10] = 0; arr[off + 11] = 0;
-        arr[off + 12] = mc.x - o.x; arr[off + 13] = mc.y - o.y; arr[off + 14] = 0; arr[off + 15] = 1;
-        n++;
+      let nb = 0, ns = 0;
+      if (aBus > 0) {
+        const k = busLenMeters(z) * unit * (0.85 + 0.15 * aBus), arr = bus3d.matAttr.array;
+        for (const id of viewIds) {
+          if (nb >= bus3d.max) break;
+          const p = pos(id, now); if (!p) continue;
+          putInstance(arr, nb++, mapboxgl.MercatorCoordinate.fromLngLat({ lng: p.lon, lat: p.lat }, 0), o, p.b, k);
+        }
+        bus3d.matAttr.needsUpdate = true;
       }
-      bus3d.matAttr.needsUpdate = true;
-      const fading = a < 1;
-      for (const im of bus3d.groups) {
-        im.count = n;
-        if (im.material.transparent !== fading) { im.material.transparent = fading; im.material.needsUpdate = true; }
-        im.material.opacity = a;
+      if (aStop > 0) {
+        const k = shelterLenMeters(z) * unit, arr = stop3d.matAttr.array;
+        for (const st of stop3d.list) { if (ns >= stop3d.max) break; putInstance(arr, ns++, st.mc, o, st.b, k); }
+        stop3d.matAttr.needsUpdate = true;
       }
+      for (const im of bus3d.groups) im.count = nb;
+      for (const im of stop3d.groups) im.count = ns;
+      setAlpha(bus3d.groups, aBus); setAlpha(stop3d.groups, aStop);
       // render relative to the map centre: keeps float32 precision (no vertex wobble)
       this.camera.projectionMatrix = new THREE.Matrix4().fromArray(matrix).multiply(new THREE.Matrix4().makeTranslation(o.x, o.y, 0));
       if (this.renderer.resetState) this.renderer.resetState(); else this.renderer.state.reset();
       this.renderer.render(this.scene, this.camera);
     },
   };
+
+  /* which way each stop faces: along the road, from the route patterns that serve it */
+  let stopBearing = null;
+  function computeStopBearings() {
+    if (stopBearing || !D.patterns) return;
+    stopBearing = new Map();
+    for (const p of Object.values(D.patterns)) for (const d of p.d) {
+      const st = d.stops;
+      for (let i = 0; i < st.length; i++) {
+        if (stopBearing.has(st[i][0])) continue;
+        const a = st[Math.max(0, i - 1)], b = st[Math.min(st.length - 1, i + 1)];
+        if (a === b) continue;
+        stopBearing.set(st[i][0], brgOf(a[2], a[3], b[2], b[3]));
+      }
+    }
+  }
+  // stops in view at shelter zoom (nearest the centre first)
+  function refreshStops3d() {
+    stop3d.list = [];
+    if (!D.stopList || map.getZoom() < ZSHELTER - 0.3) return;
+    computeStopBearings();
+    const b = map.getBounds(), c = map.getCenter();
+    const padLat = (b.getNorth() - b.getSouth()) * 0.2, padLon = (b.getEast() - b.getWest()) * 0.2;
+    const inView = D.stopList.filter((s) => s.lat > b.getSouth() - padLat && s.lat < b.getNorth() + padLat && s.lon > b.getWest() - padLon && s.lon < b.getEast() + padLon);
+    inView.sort((x, y) => Math.abs(x.lat - c.lat) + Math.abs(x.lon - c.lng) - Math.abs(y.lat - c.lat) - Math.abs(y.lon - c.lng));
+    stop3d.list = inView.slice(0, stop3d.max).map((s) => ({
+      id: s.id, mc: mapboxgl.MercatorCoordinate.fromLngLat({ lng: s.lon, lat: s.lat }, 0),
+      b: stopBearing ? (stopBearing.get(s.id) ?? 0) : 0,
+    }));
+  }
+  map.on('moveend', refreshStops3d);
 
   function set3D(on, jump) {
     S.is3D = on;
