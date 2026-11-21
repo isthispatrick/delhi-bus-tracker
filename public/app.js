@@ -847,6 +847,7 @@
     return out.sort((a, b) => a.toBoard - b.toBoard);
   }
 
+  const tripsPerDay = (rid) => (D.freq && D.freq[rid] ? D.freq[rid][0] : null);
   function headwayMin(rid) {
     const f = D.freq && D.freq[rid];
     if (!f) return null;
@@ -942,8 +943,10 @@
     const nb = nextBusFor(o, arrivals);
     o.nb = nb;
     const walkS = walkSecs(o.walkB);
+    // a route with a handful of trips a day has no meaningful "average wait": don't invent a total, sort it last
+    o.rare = !nb.next && nb.headway != null && nb.headway > 90;
     const waitS = nb.next ? Math.max(walkS, nb.next.s) : walkS + (nb.headway ? (nb.headway * 60) / 2 : 900);
-    o.total = waitS + o.rideS + walkSecs(o.walkA);
+    o.total = o.rare ? 1e7 + o.rideS : waitS + o.rideS + walkSecs(o.walkA);
     o.waitS = waitS;
   }
 
@@ -965,6 +968,7 @@
     let next;
     if (nb.next) next = `${nb.next.live ? '<span class="tag live">Live</span>' : '<span class="tag est">Est</span>'}<span>Next bus ${nb.next.s < 45 ? '<b>now</b>' : `in <b>${fmtMin(nb.next.s)} min</b>`}</span>`;
     else if (nb.first) next = `<span class="tag est">Live</span><span>Next bus in ${fmtMin(nb.first.s)} min (before you get there)${nb.headway ? `, then ~every ${nb.headway} min` : ''}</span>`;
+    else if (o.rare) next = `<span class="tag est">No live bus</span><span>Only ${tripsPerDay(o.rid) || 'a few'} trip${tripsPerDay(o.rid) === 1 ? '' : 's'} a day</span>`;
     else next = `<span class="tag est">No live bus</span><span>${nb.headway ? `Runs about every ${nb.headway} min` : 'None approaching right now'}</span>`;
     const liveCount = (o.live || []).filter((x) => x.catchable).length;
     return `<div class="card tap opt${sel ? ' sel' : ''}" data-act="opt" data-i="${i}">
@@ -974,7 +978,7 @@
           <div class="sg-name" style="font-size:15px">Towards ${esc(o.g.to)}</div>
           <div class="opt-arrive">${o.ai - o.bi} stops · ${fmtMin(o.rideS)} min ride${liveCount ? ` · ${liveCount} on the way` : ''}</div>
         </div>
-        <div class="eta"><div class="opt-time">${fmtMin(o.total)}<small>min</small></div><div class="opt-arrive">arr ${clock(arrive)}</div></div>
+        ${o.rare ? `<div class="eta"><div class="opt-time">—</div><div class="opt-arrive">rare service</div></div>` : `<div class="eta"><div class="opt-time">${fmtMin(o.total)}<small>min</small></div><div class="opt-arrive">arr ${clock(arrive)}</div></div>`}
       </div>
       <div class="opt-detail">
         <div class="r">${ico('walk')}<span>Walk <b>${fmtDist(o.walkB * WALK_DETOUR)}</b> (${mins(walkSecs(o.walkB))} min) to <b>${esc(boardStop.name)}</b></span></div>
