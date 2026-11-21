@@ -1,0 +1,6 @@
+.env
+node_modules/
+data/gtfs/
+data/reclaim/
+lib-feed.js
+*.log

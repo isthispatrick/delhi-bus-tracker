@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Delhi Bus Tracker</title>
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.9.4/mapbox-gl.css" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="map"></div>
+  <div id="map-loading"><div class="spinner"></div><div>Loading live buses…</div></div>
+
+  <!-- Top search bar -->
+  <div id="topbar">
+    <div id="searchbox">
+      <svg id="search-ic" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="route-filter" type="text" placeholder="Search route (e.g. 534, AIRPORT)" autocomplete="off" />
+      <button id="clear-search" class="hidden" aria-label="Clear">&times;</button>
+    </div>
+    <div id="search-results" class="hidden"></div>
+    <div id="filter-chip"><span id="filter-chip-label"></span><button aria-label="Clear filter">&times;</button></div>
+  </div>
+
+  <!-- Right floating buttons -->
+  <div id="controls">
+    <button id="btn-3d" class="ctl" title="3D view">3D</button>
+    <button id="btn-locate" class="ctl" title="My location &amp; next buses">
+      <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3"/><circle cx="12" cy="12" r="8"/></svg>
+    </button>
+  </div>
+
+  <!-- Status pill -->
+  <div id="status-pill"><span id="status-dot"></span><span id="status">loading…</span></div>
+
+  <!-- Bottom sheet -->
+  <div id="sheet" class="hidden">
+    <div id="sheet-handle"></div>
+    <div id="sheet-content"></div>
+  </div>
+
+  <div id="demo-badge" class="hidden">DEMO DATA — waiting for OTD API key</div>
+  <div id="token-warning" class="hidden">Mapbox token missing. Set MAPBOX_TOKEN.</div>
+
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.9.4/mapbox-gl.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
