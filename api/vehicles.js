@@ -8,8 +8,8 @@ module.exports = async (req, res) => {
     // warm this instance's trip-update cache in parallel: the app asks for arrivals right after
     getTripUpdates().catch(() => {});
     const payload = await getVehicles();
-    // CDN keeps a copy for 8 s and serves it while revalidating: one upstream fetch per window for everyone
-    res.setHeader('Cache-Control', payload.demo || payload.stale ? 'no-store' : 'public, max-age=5, s-maxage=8, stale-while-revalidate=20');
+    // CDN keeps a copy for 5 s (+5 s while revalidating): one upstream fetch per window for everyone, never more than ~10 s behind
+    res.setHeader('Cache-Control', payload.demo || payload.stale ? 'no-store' : 'public, max-age=0, s-maxage=5, stale-while-revalidate=5');
     res.status(200).json(url.searchParams.get('v') === '2' ? compact(payload) : payload);
   } catch (e) {
     res.setHeader('Cache-Control', 'no-store');

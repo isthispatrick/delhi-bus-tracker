@@ -281,45 +281,133 @@
   }
 
   /* =============================== 3. feed + motion =============================== */
-  const REFRESH_MS = 15000;
-  const MOTION_MS = REFRESH_MS + 1500;  // glide slightly longer than the gap so buses never pause
-  const STALE_S = 180;                 // a position older than this is drawn dimmed
-  const M = new Map();                 // id -> {fl, fo, fb, tl, to, tb, t0}
-  let animEnd = 0;
+  const REFRESH_MS = 10000;            // the CDN holds a snapshot for ~5 s; poll a little slower than that
+  const STALE_S = 180;                 // a position older than this is drawn dimmed and not animated
+  const EXTRAP_S = 25;                 // past the newest fix, keep moving at the last speed for at most this long
+  const BLEND_MS = 600;                // ease the drawn bus onto the model (hides small corrections)
+  const CHASE_MS = 10;                 // a large correction is chased at about this many m/s, never snapped
+
+  /* Motion model: replay with a fixed delay.
+     GPS fixes reach us 25-40 s after they were taken and each bus reports every 10-30 s. So every bus is
+     drawn LAG seconds in the past (LAG ~ the feed's own age + one poll), which almost always falls between
+     two real fixes: the bus is interpolated along its route between them, so it moves continuously, never
+     jumps and never overshoots. If no newer fix exists yet it keeps going at its last speed for up to
+     EXTRAP_S, then holds. Fixes older than what we already have (another server instance) are ignored. */
+  const T = new Map(); // id -> {fixes:[{ts,lat,lon,along}], g, brg, v}
+  let animating = true;
+  let lag = 45, lagTarget = 45, lagAt = 0;
 
   function lerpAngle(a, b, f) { const d = ((b - a + 540) % 360) - 180; return (a + d * f + 360) % 360; }
+  const brgOf = (aLat, aLon, bLat, bLon) => ((Math.atan2((bLon - aLon) * Math.cos(toRad(aLat)), bLat - aLat) * 180) / Math.PI + 360) % 360;
+  function pointAlong(g, d) {
+    let lo = 1, hi = g.cum.length - 1;
+    if (d <= 0) d = 0;
+    if (d >= g.cum[hi]) d = g.cum[hi];
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (g.cum[mid] < d) lo = mid + 1; else hi = mid; }
+    const a = g.pts[lo - 1], b = g.pts[lo], f = Math.min(1, (d - g.cum[lo - 1]) / ((g.cum[lo] - g.cum[lo - 1]) || 1));
+    return { lat: a.lat + (b.lat - a.lat) * f, lon: a.lon + (b.lon - a.lon) * f, b: brgOf(a.lat, a.lon, b.lat, b.lon) };
+  }
+  function alongFor(t, lat, lon) {
+    if (!t.g) return null;
+    const pr = projectOnGeom(lat, lon, t.g);
+    return pr.dist < 120 ? pr.along : null;
+  }
+  function matchTrack(t, bus) {
+    if (!D.patterns) return;
+    t.matched = true;
+    const m = busDirection(bus);
+    const g = m && m.proj.dist < 80 ? m.geom : null;
+    if (g !== t.g) { t.g = g; for (const f of t.fixes) f.along = alongFor(t, f.lat, f.lon); }
+  }
+  function modelAt(t, td) {
+    const F = t.fixes, n = F.length;
+    if (td <= F[0].ts || n === 1 && td <= F[0].ts + 0.01) return { lat: F[0].lat, lon: F[0].lon, b: t.brg };
+    for (let i = n - 2; i >= 0; i--) {
+      const a = F[i], c = F[i + 1];
+      if (td >= a.ts && td <= c.ts) {
+        const f = (td - a.ts) / ((c.ts - a.ts) || 1);
+        if (t.g && a.along != null && c.along != null && c.along >= a.along && c.along - a.along < 4000) return pointAlong(t.g, a.along + (c.along - a.along) * f);
+        const d = hav(a.lat, a.lon, c.lat, c.lon);
+        return { lat: a.lat + (c.lat - a.lat) * f, lon: a.lon + (c.lon - a.lon) * f, b: d > 5 ? brgOf(a.lat, a.lon, c.lat, c.lon) : t.brg };
+      }
+    }
+    // beyond the newest fix: short extrapolation at the last speed
+    const L = F[n - 1], dt = Math.min(td - L.ts, EXTRAP_S), dist = t.v * dt;
+    if (dist < 0.5) return { lat: L.lat, lon: L.lon, b: t.brg };
+    if (t.g && L.along != null) return pointAlong(t.g, L.along + dist);
+    const r = toRad(t.brg);
+    return { lat: L.lat + (dist * Math.cos(r)) / 111320, lon: L.lon + (dist * Math.sin(r)) / (111320 * Math.cos(toRad(L.lat))), b: t.brg };
+  }
+  function displayTime(nowMs) {
+    // drift the global delay slowly so a change never makes every bus lurch
+    if (lagAt) { const step = (nowMs - lagAt) / 1000 * 0.25; lag += Math.max(-step, Math.min(step, lagTarget - lag)); }
+    lagAt = nowMs;
+    return Date.now() / 1000 - lag;
+  }
+  // drawn position at frame time `now` (performance.now())
+  let tdCache = { at: -1, td: 0 };
   function pos(id, now) {
-    const m = M.get(id);
-    if (!m) return null;
-    let f = (now - m.t0) / MOTION_MS; f = f < 0 ? 0 : f > 1 ? 1 : f;
-    return { lat: m.fl + (m.tl - m.fl) * f, lon: m.fo + (m.to - m.fo) * f, b: lerpAngle(m.fb, m.tb, Math.min(1, f * 4)) };
+    const t = T.get(id);
+    if (!t || !t.fixes.length) return null;
+    if (!t.matched && D.patterns) { const bus = S.buses.get(id); if (bus) matchTrack(t, bus); }
+    if (tdCache.at !== now) tdCache = { at: now, td: displayTime(now) };
+    const p = modelAt(t, tdCache.td);
+    if (t.dlat == null || now - t.dAt > 2500) { t.dlat = p.lat; t.dlon = p.lon; t.db = p.b; t.dAt = now; return { lat: p.lat, lon: p.lon, b: p.b }; }
+    // small differences ease out quickly; a big correction (a late fix) is chased at ~CHASE_MS m/s
+    const gap = Math.abs(p.lat - t.dlat) * 111320 + Math.abs(p.lon - t.dlon) * 97700;
+    const tau = gap > 15 ? Math.min(8000, (gap / CHASE_MS) * 1000) : BLEND_MS;
+    const k = 1 - Math.exp(-(now - t.dAt) / tau);
+    t.dlat += (p.lat - t.dlat) * k; t.dlon += (p.lon - t.dlon) * k; t.db = lerpAngle(t.db, p.b, k); t.dAt = now;
+    return { lat: t.dlat, lon: t.dlon, b: t.db };
   }
 
   function ingest(list, labels) {
-    const now = performance.now();
+    const nowS = Date.now() / 1000;
     const seen = new Set();
+    const ages = [];
     S.byRoute = new Map();
     for (const b of list) {
       seen.add(b.id);
-      const prev = M.get(b.id);
-      let brg = b.bearing || 0;
-      if (prev) {
-        const cur = pos(b.id, now);
-        const moved = hav(cur.lat, cur.lon, b.lat, b.lon);
-        if (!b.bearing && moved > 8) brg = (Math.atan2((b.lon - cur.lon) * Math.cos(toRad(b.lat)), b.lat - cur.lat) * 180) / Math.PI;
-        if (!b.bearing && moved <= 8) brg = cur.b;
-        if (moved > 2500) M.set(b.id, { fl: b.lat, fo: b.lon, fb: brg, tl: b.lat, to: b.lon, tb: brg, t0: now }); // teleport: snap
-        else M.set(b.id, { fl: cur.lat, fo: cur.lon, fb: cur.b, tl: b.lat, to: b.lon, tb: (brg + 360) % 360, t0: now });
-      } else {
-        M.set(b.id, { fl: b.lat, fo: b.lon, fb: brg, tl: b.lat, to: b.lon, tb: brg, t0: now - MOTION_MS });
+      const fixTs = b.ts || Math.floor(nowS);
+      let t = T.get(b.id);
+      const last = t && t.fixes[t.fixes.length - 1];
+      if (last && fixTs < last.rts) { // older snapshot from another server instance: keep ours
+        const cur = S.buses.get(b.id);
+        if (cur) { let arr = S.byRoute.get(cur.route_id); if (!arr) S.byRoute.set(cur.route_id, (arr = [])); arr.push(cur); }
+        continue;
       }
-      b.bearing = (brg + 360) % 360;
+      if (!t) {
+        t = { fixes: [], g: null, brg: b.bearing || 0, v: 0, dlat: null };
+        T.set(b.id, t);
+        // seed with the server's previous fix so the bus moves from the first frame
+        if (b.prev && b.prev.ts < fixTs && hav(b.prev.lat, b.prev.lon, b.lat, b.lon) < 2500) t.fixes.push({ ts: b.prev.ts, rts: b.prev.ts, lat: b.prev.lat, lon: b.prev.lon, along: null });
+      }
+      if (!last || fixTs > last.rts) {
+        if (last && hav(last.lat, last.lon, b.lat, b.lon) > 2500) { t.fixes = []; t.dlat = null; } // teleport: start over
+        const prev = t.fixes[t.fixes.length - 1];
+        t.fixes.push({ ts: fixTs, rts: fixTs, lat: b.lat, lon: b.lon, along: null });
+        while (t.fixes.length > 8) t.fixes.shift();
+        if (prev) {
+          const d = hav(prev.lat, prev.lon, b.lat, b.lon), dts = Math.max(1, fixTs - prev.rts);
+          const vObs = Math.min(16, d / dts), vFeed = b.speed > 0.5 ? Math.min(16, b.speed) : null;
+          t.v = vFeed != null ? 0.5 * vFeed + 0.5 * vObs : vObs;
+          if (d > 8) t.brg = brgOf(prev.lat, prev.lon, b.lat, b.lon);
+        } else if (b.speed > 0.5) t.v = Math.min(16, b.speed);
+        if (b.bearing) t.brg = b.bearing;
+        t.matched = false;
+        matchTrack(t, b);
+        const nf = t.fixes[t.fixes.length - 1];
+        nf.along = alongFor(t, nf.lat, nf.lon);
+      }
+      if (nowS - fixTs > STALE_S) t.v = 0;
+      else ages.push(nowS - fixTs);
+      b.bearing = t.brg;
       S.buses.set(b.id, b);
       let arr = S.byRoute.get(b.route_id); if (!arr) S.byRoute.set(b.route_id, (arr = [])); arr.push(b);
     }
-    for (const id of [...S.buses.keys()]) if (!seen.has(id)) { S.buses.delete(id); M.delete(id); }
+    for (const id of [...S.buses.keys()]) if (!seen.has(id)) { S.buses.delete(id); T.delete(id); }
+    if (ages.length) { ages.sort((a, b) => a - b); lagTarget = Math.max(20, Math.min(75, ages[ages.length >> 1] + REFRESH_MS / 1000 + 4)); if (!lagAt) lag = lagTarget; }
     if (labels) for (const [rid, l] of labels) S.labels.set(rid, l);
-    animEnd = now + MOTION_MS;
     if (S.focusRoutes) recomputeFocus();
     refreshView(true);
     kick();
@@ -331,6 +419,7 @@
     const list = p.b.map((x) => ({
       id: x[0], route_id: p.r[x[1]], route: p.l[x[1]], lat: x[2] / 1e5, lon: x[3] / 1e5, bearing: x[4],
       speed: x[5] < 0 ? null : x[5] / 10, ts: x[6] < 0 ? null : p.t0 + x[6],
+      prev: x[7] ? { lat: x[7][0] / 1e5, lon: x[7][1] / 1e5, ts: p.t0 + x[7][2] } : null,
     }));
     return { list, labels };
   }
@@ -344,21 +433,25 @@
     const to = setTimeout(() => fetchCtl && fetchCtl.abort(), 12000);
     S.fetching = true; renderStatus();
     try {
-      const p = await (await fetch('/api/vehicles?v=2', { signal: fetchCtl.signal })).json();
+      const p = await (await fetch('/api/vehicles?v=2', { signal: fetchCtl.signal, cache: 'no-store' })).json();
       if (!p || !p.b) throw new Error('bad payload');
+      if (S.meta && p.feed_ts && S.meta.feed_ts && p.feed_ts < S.meta.feed_ts && p.source === S.meta.source) throw Object.assign(new Error('older snapshot'), { benign: true });
       const { list, labels } = decode(p);
       S.meta = p; S.lastOk = Date.now(); S.failures = 0;
       ingest(list, labels);
       if (S.mode === 'bus' && S.selectedId) refreshBusSheet();
       if (S.mode === 'dest') updateDestLive();
     } catch (e) {
-      S.failures++;
+      if (!e.benign) S.failures++;
     } finally {
       clearTimeout(to); fetchCtl = null; S.fetching = false; renderStatus();
       pollT = setTimeout(refresh, S.failures ? Math.min(REFRESH_MS, 4000 * S.failures) : REFRESH_MS);
     }
   }
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && !S.fetching && S.lastOk && Date.now() - S.lastOk > 8000) refresh(); });
+  document.addEventListener('visibilitychange', () => {
+    animating = !document.hidden;
+    if (!document.hidden) { kick(); if (!S.fetching && S.lastOk && Date.now() - S.lastOk > 8000) refresh(); }
+  });
 
   function renderStatus() {
     const m = S.meta, el = ui.status;
@@ -405,7 +498,7 @@
     rafId = 0;
     const now = performance.now();
     const z = map.getZoom();
-    const moving = now < animEnd;
+    const moving = animating && S.buses.size > 0;
     const iv = pushInterval(z) * (S.interacting && z < 14 ? 4 : 1);
     if (now - lastPush >= iv) { pushSource(now); lastPush = now; }
     if (S.followId) followTick(now);
@@ -1505,4 +1598,6 @@
     }
   }
   window.addEventListener('hashchange', handleHash);
+  // ?debug=motion exposes the motion model for measurement (off by default)
+  if (/[?&]debug=motion\b/.test(location.search)) window.__motion = { pos: (id) => pos(id, performance.now()), track: (id) => T.get(id), lag: () => ({ lag, lagTarget }), view: () => viewIds.slice(), feed: () => S.meta && { updated: S.meta.updated, feed_ts: S.meta.feed_ts, source: S.meta.source } };
 })();
