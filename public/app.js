@@ -285,7 +285,8 @@
   /* =============================== 3. feed + motion =============================== */
   const REFRESH_MS = 10000;            // the CDN holds a snapshot for ~5 s; poll a little slower than that
   const STALE_S = 180;                 // a position older than this is drawn dimmed and not animated
-  const EXTRAP_S = 25;                 // past the newest fix, keep moving at the last speed for at most this long
+  const EXTRAP_S = 40;                 // past the newest fix, keep moving along the route at the last speed this long
+  const EXTRAP_FREE_S = 20;            // ...or this long straight ahead when the bus isn't matched to a route
   const BLEND_MS = 600;                // ease the drawn bus onto the model (hides small corrections)
   const CHASE_MS = 10;                 // a large correction is chased at about this many m/s, never snapped
 
@@ -299,7 +300,7 @@
      are ignored. */
   const T = new Map(); // id -> {fixes:[{ts,lat,lon,along}], g, brg, v}
   let animating = true;
-  const LAG_MIN = 15, LAG_MAX = 150, LAG_DRIFT = 0.3;
+  const LAG_MIN = 15, LAG_MAX = 150, LAG_UP = 0.6, LAG_DOWN = 0.15; // s of delay change per s
 
   function lerpAngle(a, b, f) { const d = ((b - a + 540) % 360) - 180; return (a + d * f + 360) % 360; }
   const brgOf = (aLat, aLon, bLat, bLon) => ((Math.atan2((bLon - aLon) * Math.cos(toRad(aLat)), bLat - aLat) * 180) / Math.PI + 360) % 360;
@@ -336,7 +337,7 @@
       }
     }
     // beyond the newest fix: short extrapolation at the last speed
-    const L = F[n - 1], dt = Math.min(td - L.ts, EXTRAP_S), dist = t.v * dt;
+    const L = F[n - 1], dt = Math.min(td - L.ts, t.g && L.along != null ? EXTRAP_S : EXTRAP_FREE_S), dist = t.v * dt;
     if (dist < 0.5) return { lat: L.lat, lon: L.lon, b: t.brg };
     if (t.g && L.along != null) return pointAlong(t.g, L.along + dist);
     const r = toRad(t.brg);
@@ -344,7 +345,7 @@
   }
   // this bus's display time: now minus its own (slowly drifting) delay
   function displayTime(t, nowMs) {
-    if (t.lagAt != null) { const step = ((nowMs - t.lagAt) / 1000) * LAG_DRIFT; t.lag += Math.max(-step, Math.min(step, t.lagT - t.lag)); }
+    if (t.lagAt != null) { const dt = (nowMs - t.lagAt) / 1000; t.lag += Math.max(-dt * LAG_DOWN, Math.min(dt * LAG_UP, t.lagT - t.lag)); }
     t.lagAt = nowMs;
     return Date.now() / 1000 - t.lag;
   }
@@ -398,10 +399,12 @@
           if (d > 8) t.brg = brgOf(prev.lat, prev.lon, b.lat, b.lon);
         } else if (b.speed > 0.5) t.v = Math.min(16, b.speed);
         if (b.bearing) t.brg = b.bearing;
-        // this bus's delay: how late its fix arrived + how long until the next one usually comes (+ a poll)
-        const interval = prev ? Math.min(90, Math.max(5, fixTs - prev.rts)) : 15;
-        const target = Math.max(LAG_MIN, Math.min(LAG_MAX, (nowS - fixTs) + interval + REFRESH_MS / 1000 * 0.5 + 2));
-        t.lagT = t.fixes.length > 1 && t.lagSeen ? 0.6 * t.lagT + 0.4 * target : target;
+        // this bus's delay: how late its fixes arrive + the longest recent gap between them (+ a poll), so the
+        // replay point stays between two real fixes even when a snapshot is missed
+        if (prev) { t.gaps = (t.gaps || []).concat(Math.min(90, Math.max(5, fixTs - prev.rts))).slice(-4); }
+        const gap = t.gaps && t.gaps.length ? Math.max(...t.gaps) : 20;
+        const target = Math.max(LAG_MIN, Math.min(LAG_MAX, (nowS - fixTs) + gap + REFRESH_MS / 1000 * 0.5 + 3));
+        t.lagT = t.lagSeen ? Math.max(target, 0.7 * t.lagT + 0.3 * target) : target; // rise at once, fall slowly
         t.lagSeen = true;
         t.matched = false;
         matchTrack(t, b);
