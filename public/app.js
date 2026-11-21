@@ -625,7 +625,7 @@
        Model: "Low-poly City - Bus" by Innerscene, CC0 (https://www.innerscene.com/tools/library/3d-parts/low-poly-city-bus-49c04273).
        Renders as a real 3D bus at zoom >= 13.5; green dots stay below that. */
     const BUS3D_MIN_ZOOM = 13.5;
-    const bus3d = { ready: false, instances: [], max: 4000, renderedVersion: -1 };
+    const bus3d = { ready: false, instances: [], max: 4000, renderedVersion: -1, renderedZoom: 0 };
     window.__bus3d = bus3d;
     let _rxBase = null;
     function fadeOutDots() {
@@ -643,9 +643,11 @@
       for (let i = 0; i < n; i++) {
         const b = list[i];
         const mc = mapboxgl.MercatorCoordinate.fromLngLat({ lng: b.lon, lat: b.lat }, 0);
-        const sc = mc.meterInMercatorCoordinateUnits();
+        // exaggerated like a map icon: ~36px long at any zoom, never below real scale
+        const factor = Math.max(1, 6.9 * Math.pow(2, 15 - bus3d.zoom));
+        const sc = mc.meterInMercatorCoordinateUnits() * factor;
         q.setFromAxisAngle(upAxis, toRad(b.bearing || 0));
-        p.set(mc.x, mc.y, 0); s.set(sc * 1.35, sc * 1.35, sc * 1.35); // model is a ~7.9m minibus; ~11m reads better on the map
+        p.set(mc.x, mc.y, 0); s.set(sc, sc, sc);
         m.compose(p, q, s).multiply(_rxBase);
         for (const im of bus3d.instances) im.setMatrixAt(i, m2.copy(m).multiply(im.userData.local));
       }
@@ -684,9 +686,11 @@
       },
       render(gl, matrix) {
         if (!bus3d.ready || map.getZoom() < BUS3D_MIN_ZOOM) return;
-        if (bus3d.renderedVersion !== busDataVersion) {
+        bus3d.zoom = map.getZoom();
+        if (bus3d.renderedVersion !== busDataVersion || Math.abs(bus3d.renderedZoom - bus3d.zoom) > 0.05) {
           updateBusInstances();
           bus3d.renderedVersion = busDataVersion;
+          bus3d.renderedZoom = bus3d.zoom;
         }
         this.camera.projectionMatrix = new THREE.Matrix4().fromArray(matrix);
         this.renderer.state.reset();
