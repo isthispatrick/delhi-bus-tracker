@@ -1461,7 +1461,12 @@
   const firstData = refresh();
   // don't hold the boot screen for slow tiles: once data and the style are in, show the app
   firstData.then(() => { const done = () => ui.boot.classList.add('gone'); if (map.isStyleLoaded()) done(); else map.once('style.load', done); });
-  map.on('load', async () => {
+  // static data starts now, in parallel with the style and the first vehicle fetch
+  loadStops().catch(() => {}); loadMetro().catch(() => {}); loadPlaces().catch(() => {});
+  // layers go in as soon as the style is parsed; don't wait for 'load' (that waits for every tile to paint)
+  let booted = false;
+  const boot = async () => {
+    if (booted) return; booted = true;
     addLayers();
     loadStops().then(() => map.getSource('stops').setData({ type: 'FeatureCollection', features: D.stopList.map((s) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [s.lon, s.lat] }, properties: { id: s.id, name: s.name } })) })).catch(() => {});
     loadMetro().then(() => {
@@ -1474,9 +1479,10 @@
     ui.boot.classList.add('gone'); // the map is up; buses stream in as soon as the first fetch lands
     await firstData;
     // warm the planner and search data in the background so the first search is instant
-    idle(() => { loadPlaces().catch(() => {}); loadNet().catch(() => {}); });
+    idle(() => { loadNet().catch(() => {}); });
     await handleHash();
-  });
+  };
+  if (map.isStyleLoaded()) boot(); else map.once('style.load', boot);
   map.on('error', (e) => { if (e && e.error && /token|401|403/i.test(String(e.error.message || e.error.status))) { ui.fatal.textContent = 'The map could not load (Mapbox token rejected).'; ui.fatal.classList.remove('hidden'); } });
   setTimeout(() => { if (!ui.boot.classList.contains('gone')) ui.bootSub.textContent = 'Still connecting to the live feed…'; }, 6000);
 
