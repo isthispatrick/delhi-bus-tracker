@@ -129,15 +129,19 @@
 
   /* live predictions, cached per stop for 12 s, fetched in batches */
   const arrCache = new Map();
-  async function arrivalsForStops(ids) {
+  const arrInflight = new Map();
+  async function arrivalsForStops(ids, maxWait) {
     const now = Date.now();
-    const need = ids.filter((id) => { const c = arrCache.get(id); return !c || now - c.at > 12000; });
+    const need = ids.filter((id) => { const c = arrCache.get(id); return (!c || now - c.at > 12000) && !arrInflight.has(id); });
     if (need.length) {
-      try {
-        const d = await getJson(`/api/arrivals?stop_ids=${need.slice(0, 40).map(encodeURIComponent).join(',')}`);
-        for (const id of need) arrCache.set(id, { at: now, list: (d.stops && d.stops[id]) || [], stale: d.stale });
-      } catch { for (const id of need) if (!arrCache.has(id)) arrCache.set(id, { at: now - 9000, list: [] }); }
+      const p = getJson(`/api/arrivals?stop_ids=${need.slice(0, 40).map(encodeURIComponent).join(',')}`)
+        .then((d) => { for (const id of need) arrCache.set(id, { at: Date.now(), list: (d.stops && d.stops[id]) || [], stale: d.stale }); })
+        .catch(() => { for (const id of need) if (!arrCache.has(id)) arrCache.set(id, { at: Date.now() - 9000, list: [] }); })
+        .finally(() => { for (const id of need) arrInflight.delete(id); });
+      for (const id of need) arrInflight.set(id, p);
     }
+    const pending = [...new Set(ids.map((id) => arrInflight.get(id)).filter(Boolean))];
+    if (pending.length) await Promise.race([Promise.all(pending), new Promise((r) => setTimeout(r, maxWait == null ? 3000 : maxWait))]);
     const t = Math.floor(Date.now() / 1000);
     const out = {};
     for (const id of ids) out[id] = ((arrCache.get(id) || {}).list || []).map((a) => ({ ...a, in_sec: a.eta - t })).filter((a) => a.in_sec > -30);
@@ -807,10 +811,20 @@
     if (S.dest !== dest) return;
     const opts = directOptions(origin, dest);
     for (const o of opts) o.live = liveForOption(o);
-    const arr = opts.length ? await arrivalsForStops([...new Set(opts.map((o) => o.g.pts[o.bi].id))]) : {};
+    // results first (position-based ETAs), live predictions folded in as soon as they land
+    const boardIds = [...new Set(opts.map((o) => o.g.pts[o.bi].id))];
+    const arr = opts.length ? await arrivalsForStops(boardIds, 600) : {};
     if (S.dest !== dest) return;
     for (const o of opts) scoreOption(o, arr[o.g.pts[o.bi].id]);
     opts.sort((a, b) => a.total - b.total);
+    if (opts.length && boardIds.some((id) => arrInflight.has(id))) {
+      arrivalsForStops(boardIds, 20000).then((late) => {
+        if (S.dest !== dest || !S.results || S.results.opts !== opts) return;
+        for (const o of opts) scoreOption(o, late[o.g.pts[o.bi].id]);
+        if (S.mode === 'dest' && S.results.selected == null) { opts.sort((a, b) => a.total - b.total); renderDest(true); }
+        else if (S.mode === 'dest') renderDest(true);
+      });
+    }
 
     // with one change (bus+bus or bus+metro), and metro alternatives worth showing
     let planned = null;
@@ -1445,7 +1459,7 @@
     if (!h) return;
     const kv = {};
     for (const part of h.split(/[&,]/)) { const [k, ...v] = part.split('='); kv[k] = v.join('='); }
-    if ('3d' in kv) set3D(true, true);
+    if ('3d' in kv) { map.jumpTo({ center: [77.2185, 28.6315] }); set3D(true, true); }
     const ll = (s) => { const [a, b] = (s || '').split('/').map(Number); return Number.isFinite(a) && Number.isFinite(b) ? { lat: a, lon: b } : null; };
     if (kv.from) { const l = ll(kv.from); if (l) setMe({ ...l, name: 'Your location' }); }
     if (kv.near) { const l = ll(kv.near); if (l) { setMe({ ...l, name: 'Your location' }); openNearMe(); } }
