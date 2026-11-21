@@ -488,7 +488,12 @@
   function sheetPadding() {
     const top = (document.getElementById('appbar').getBoundingClientRect().bottom || 120) + 52; // room for the 42 px destination pin
     const wide = window.innerWidth >= 720;
-    return wide ? { top: 40, bottom: 40, left: 460, right: 60 } : { top, bottom: Math.min(window.innerHeight * 0.55, sheet.visible() || window.innerHeight * 0.5) + 16, left: 40, right: 40 };
+    const pad = wide ? { top: 40, bottom: 40, left: 460, right: 60 } : { top, bottom: Math.min(window.innerHeight * 0.55, sheet.visible() || window.innerHeight * 0.5) + 16, left: 40, right: 40 };
+    // never hand mapbox a NaN inset (it throws on every animation frame); keep the padded box non-empty
+    const fin = (v, d) => (Number.isFinite(v) ? Math.max(0, Math.round(v)) : d);
+    pad.top = fin(pad.top, 120); pad.bottom = fin(pad.bottom, 200); pad.left = fin(pad.left, 40); pad.right = fin(pad.right, 40);
+    if (pad.top + pad.bottom > window.innerHeight - 80) pad.bottom = Math.max(0, window.innerHeight - 80 - pad.top);
+    return pad;
   }
   // drag: grabber, header, or the body when scrolled to top
   (() => {
@@ -981,7 +986,11 @@
     const nextId = nextVehicle(o);
     renderDest(true);
     const card = ui.sheetBody.querySelector(`.card[data-i="${i}"][data-act="opt"]`);
-    if (card) card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    if (card) { // scroll only the sheet: scrollIntoView would also scroll the (overflow: hidden) page
+      const body = ui.sheetBody, cb = card.getBoundingClientRect(), bb = body.getBoundingClientRect();
+      if (cb.bottom > bb.bottom) body.scrollTo({ top: body.scrollTop + (cb.bottom - bb.bottom) + 12, behavior: 'smooth' });
+      else if (cb.top < bb.top) body.scrollTo({ top: body.scrollTop - (bb.top - cb.top) - 12, behavior: 'smooth' });
+    }
     const bus = nextId && S.buses.get(nextId);
     fitTo([R.origin, b, a, R.dest, bus && pos(bus.id, performance.now())], 16);
   }

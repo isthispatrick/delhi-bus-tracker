@@ -33,7 +33,7 @@
   --f: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-html, body { margin: 0; height: 100%; background: var(--bg); color: var(--t1); font-family: var(--f); font-size: 15px; line-height: 1.35; overscroll-behavior: none; -webkit-font-smoothing: antialiased; overflow: hidden; }
+html, body { margin: 0; height: 100%; position: fixed; inset: 0; width: 100%; background: var(--bg); color: var(--t1); font-family: var(--f); font-size: 15px; line-height: 1.35; overscroll-behavior: none; -webkit-font-smoothing: antialiased; overflow: hidden; }
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
 svg { display: block; }
 .hidden { display: none !important; }
