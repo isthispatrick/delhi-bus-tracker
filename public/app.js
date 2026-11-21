@@ -1057,31 +1057,42 @@
   }
 
   /* =============================== 8. route focus =============================== */
+  // a route number is often two route ids, one per direction ("534" up and down): treat them as one route
+  function ridsForLabel(label) {
+    const L = String(label || '').toUpperCase();
+    const out = new Set();
+    if (D.patterns) for (const [rid, p] of Object.entries(D.patterns)) if ((p.sn || '').toUpperCase() === L) out.add(rid);
+    for (const [rid, l] of S.labels) if ((l || '').toUpperCase() === L) out.add(rid);
+    return [...out];
+  }
   async function showRoute(rid) {
     S.mode = 'route'; select(null); stopFollow(true); setDestMarker(null);
     sheet.open(`${head(badge(routeLabel(rid), 'lg'), 'Loading route…')}${skeleton(2)}`, 'half', (replaced) => { if (!replaced && S.mode === 'route') clearModes(); });
-    await loadPatterns().catch(() => {});
-    const geoms = patternGeom(rid) || [];
-    focusFilter = (b) => b.route_id === rid;
+    await Promise.all([loadPatterns(), loadNet()]).catch(() => {});
+    const label = routeLabel(rid);
+    const rids = ridsForLabel(label);
+    if (!rids.includes(rid)) rids.push(rid);
+    S.routeLabel = label;
+    const geoms = rids.flatMap((r) => patternGeom(r) || []);
+    focusFilter = (b) => rids.includes(b.route_id);
     recomputeFocus();
-    setFocus([...S.focus], `Route ${routeLabel(rid)}`, [rid]);
+    setFocus([...S.focus], `Route ${label}`, rids);
     setTrip(geoms.map((g, i) => lineFeat(g.pts.map((p) => [p.lon, p.lat]), { kind: 'bus', dim: i ? 1 : 0 })),
       geoms.flatMap((g) => [ptFeat(g.pts[0], '#ff6a1f', g.from), ptFeat(g.pts[g.pts.length - 1], '#ff6a1f', g.to)]));
-    renderRoute(rid);
-    const live = S.byRoute.get(rid) || [];
-    const pts = geoms.length ? geoms[0].pts : live;
-    fitTo(pts.concat(live), 14.5);
+    renderRoute(label);
+    const live = rids.flatMap((r) => S.byRoute.get(r) || []);
+    fitTo((geoms.length ? geoms[0].pts : []).concat(live), 14.5);
   }
-  function renderRoute(rid) {
-    const geoms = patternGeom(rid) || [];
-    const live = S.byRoute.get(rid) || [];
+  function renderRoute(label) {
+    const rids = ridsForLabel(label);
+    const geoms = rids.flatMap((r) => patternGeom(r) || []);
+    const live = rids.flatMap((r) => S.byRoute.get(r) || []);
     const dirs = geoms.map((g) => ({ g, buses: [] }));
-    const other = [];
-    for (const b of live) { const m = busDirection(b); const d = m && dirs.find((x) => x.g === m.geom); if (d) d.buses.push({ b, m }); else other.push(b); }
-    const label = routeLabel(rid);
-    let html = head(`${badge(label, 'lg')}`, geoms.length ? `${esc(geoms[0].from)} ↔ ${esc(geoms[0].to)}` : 'Live buses on this route');
-    html = html.replace('<div class="sh-title">', '<div class="sh-title" style="display:flex;align-items:center;gap:10px">');
-    const hw = headwayMin(rid);
+    for (const b of live) { const m = busDirection(b); const d = m && dirs.find((x) => x.g === m.geom); if (d) d.buses.push({ b, m }); }
+    const ends = geoms.length ? `${esc(geoms[0].from)} ↔ ${esc(geoms[0].to)}` : 'Live buses on this route';
+    let html = head(`Route ${esc(label)}`, ends, badge(label, 'lg'));
+    const hws = rids.map(headwayMin).filter(Boolean);
+    const hw = hws.length ? Math.min(...hws) : null;
     html += `<div class="facts"><div class="fact"><div class="k">Live now</div><div class="v">${live.length}</div></div><div class="fact"><div class="k">Stops</div><div class="v">${geoms[0] ? geoms[0].pts.length : '—'}</div></div><div class="fact"><div class="k">Frequency</div><div class="v">${hw ? `~${hw} min` : '—'}</div></div></div>`;
     for (const d of dirs) {
       html += `<div class="sec">Towards ${esc(d.g.to)}<span class="fill"></span>${d.buses.length} live</div>`;
@@ -1089,7 +1100,7 @@
       else html += `<div class="card">${d.buses.sort((x, y) => y.m.proj.along - x.m.proj.along).slice(0, 8).map(({ b, m }) => {
         const nxt = d.g.pts.find((p, i) => d.g.cum[i] > m.proj.along + 30);
         return `<div class="arr tap" data-act="bus" data-id="${esc(b.id)}" style="cursor:pointer">${ico('bus')}<div class="to"><div class="a">${nxt ? `Next: ${esc(nxt.name)}` : 'Arriving at terminal'}</div><div class="b">${Math.round((m.proj.along / (d.g.total || 1)) * 100)}% along · bus ${esc(b.id)}</div></div>${ico('chev')}</div>`;
-      }).join('')}</div>`;
+      }).join('')}${d.buses.length > 8 ? `<div class="arr"><div class="to"><div class="b">+ ${d.buses.length - 8} more on the map</div></div></div>` : ''}</div>`;
     }
     if (!geoms.length) html += `<div class="note">No stop data for this route. Showing live positions only.</div>`;
     sheet.update(`<div class="sheet-fade">${html}</div>`);
@@ -1114,7 +1125,7 @@
         if (!replaced) {
           S.mode = null;
           if (S.results && (prevMode === 'dest' || prevMode === 'trip')) { S.mode = 'dest'; renderDest(); sheet.onClose = destOnClose; sheet.set('half'); }
-          else if (prevMode === 'route' && S.focusRoutes && S.focusRoutes.length === 1) { const rid = S.focusRoutes[0]; S.mode = 'route'; renderRoute(rid); sheet.onClose = (r) => { if (!r && S.mode === 'route') clearModes(); }; sheet.set('half'); }
+          else if (prevMode === 'route' && S.routeLabel) { S.mode = 'route'; renderRoute(S.routeLabel); sheet.onClose = (r) => { if (!r && S.mode === 'route') clearModes(); }; sheet.set('half'); }
         }
       }
     });
