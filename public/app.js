@@ -1437,7 +1437,6 @@
       this.renderer.render(this.scene, this.camera);
     },
   };
-  window.__bus3d = bus3d;
 
   function set3D(on, jump) {
     S.is3D = on;
