@@ -289,15 +289,17 @@
   const BLEND_MS = 600;                // ease the drawn bus onto the model (hides small corrections)
   const CHASE_MS = 10;                 // a large correction is chased at about this many m/s, never snapped
 
-  /* Motion model: replay with a fixed delay.
-     GPS fixes reach us 25-40 s after they were taken and each bus reports every 10-30 s. So every bus is
-     drawn LAG seconds in the past (LAG ~ the feed's own age + one poll), which almost always falls between
-     two real fixes: the bus is interpolated along its route between them, so it moves continuously, never
-     jumps and never overshoots. If no newer fix exists yet it keeps going at its last speed for up to
-     EXTRAP_S, then holds. Fixes older than what we already have (another server instance) are ignored. */
+  /* Motion model: replay each bus with its own delay.
+     GPS fixes reach us 25-40 s after they were taken (some buses much later) and each bus reports every
+     10-120 s. So every bus is drawn `lag` seconds in the past, where its lag ~ how late its fixes arrive plus
+     how often it reports. That moment almost always falls between two real fixes: the bus is interpolated
+     along its route between them, so it moves continuously, never jumps and never overshoots. If no newer
+     fix exists yet it keeps going at its last speed for up to EXTRAP_S, then holds. A bus's lag drifts
+     slowly (<= LAG_DRIFT s per s) so a change never makes it lurch. Older fixes (another server instance)
+     are ignored. */
   const T = new Map(); // id -> {fixes:[{ts,lat,lon,along}], g, brg, v}
   let animating = true;
-  let lag = 45, lagTarget = 45, lagAt = 0;
+  const LAG_MIN = 15, LAG_MAX = 150, LAG_DRIFT = 0.3;
 
   function lerpAngle(a, b, f) { const d = ((b - a + 540) % 360) - 180; return (a + d * f + 360) % 360; }
   const brgOf = (aLat, aLon, bLat, bLon) => ((Math.atan2((bLon - aLon) * Math.cos(toRad(aLat)), bLat - aLat) * 180) / Math.PI + 360) % 360;
@@ -340,20 +342,20 @@
     const r = toRad(t.brg);
     return { lat: L.lat + (dist * Math.cos(r)) / 111320, lon: L.lon + (dist * Math.sin(r)) / (111320 * Math.cos(toRad(L.lat))), b: t.brg };
   }
-  function displayTime(nowMs) {
-    // drift the global delay slowly so a change never makes every bus lurch
-    if (lagAt) { const step = (nowMs - lagAt) / 1000 * 0.25; lag += Math.max(-step, Math.min(step, lagTarget - lag)); }
-    lagAt = nowMs;
-    return Date.now() / 1000 - lag;
+  // this bus's display time: now minus its own (slowly drifting) delay
+  function displayTime(t, nowMs) {
+    if (t.lagAt != null) { const step = ((nowMs - t.lagAt) / 1000) * LAG_DRIFT; t.lag += Math.max(-step, Math.min(step, t.lagT - t.lag)); }
+    t.lagAt = nowMs;
+    return Date.now() / 1000 - t.lag;
   }
   // drawn position at frame time `now` (performance.now())
-  let tdCache = { at: -1, td: 0 };
   function pos(id, now) {
     const t = T.get(id);
     if (!t || !t.fixes.length) return null;
     if (!t.matched && D.patterns) { const bus = S.buses.get(id); if (bus) matchTrack(t, bus); }
-    if (tdCache.at !== now) tdCache = { at: now, td: displayTime(now) };
-    const p = modelAt(t, tdCache.td);
+    if (t.dAt != null && now - t.dAt > 2500) t.lagAt = null; // was off-screen: jump straight to its target delay
+    if (t.lagAt == null) t.lag = t.lagT;
+    const p = modelAt(t, displayTime(t, now));
     if (t.dlat == null || now - t.dAt > 2500) { t.dlat = p.lat; t.dlon = p.lon; t.db = p.b; t.dAt = now; return { lat: p.lat, lon: p.lon, b: p.b }; }
     // small differences ease out quickly; a big correction (a late fix) is chased at ~CHASE_MS m/s
     const gap = Math.abs(p.lat - t.dlat) * 111320 + Math.abs(p.lon - t.dlon) * 97700;
@@ -379,7 +381,7 @@
         continue;
       }
       if (!t) {
-        t = { fixes: [], g: null, brg: b.bearing || 0, v: 0, dlat: null };
+        t = { fixes: [], g: null, brg: b.bearing || 0, v: 0, dlat: null, lag: 45, lagT: 45, lagAt: null };
         T.set(b.id, t);
         // seed with the server's previous fix so the bus moves from the first frame
         if (b.prev && b.prev.ts < fixTs && hav(b.prev.lat, b.prev.lon, b.lat, b.lon) < 2500) t.fixes.push({ ts: b.prev.ts, rts: b.prev.ts, lat: b.prev.lat, lon: b.prev.lon, along: null });
@@ -396,6 +398,11 @@
           if (d > 8) t.brg = brgOf(prev.lat, prev.lon, b.lat, b.lon);
         } else if (b.speed > 0.5) t.v = Math.min(16, b.speed);
         if (b.bearing) t.brg = b.bearing;
+        // this bus's delay: how late its fix arrived + how long until the next one usually comes (+ a poll)
+        const interval = prev ? Math.min(90, Math.max(5, fixTs - prev.rts)) : 15;
+        const target = Math.max(LAG_MIN, Math.min(LAG_MAX, (nowS - fixTs) + interval + REFRESH_MS / 1000 * 0.5 + 2));
+        t.lagT = t.fixes.length > 1 && t.lagSeen ? 0.6 * t.lagT + 0.4 * target : target;
+        t.lagSeen = true;
         t.matched = false;
         matchTrack(t, b);
         const nf = t.fixes[t.fixes.length - 1];
@@ -408,7 +415,6 @@
       let arr = S.byRoute.get(b.route_id); if (!arr) S.byRoute.set(b.route_id, (arr = [])); arr.push(b);
     }
     for (const id of [...S.buses.keys()]) if (!seen.has(id)) { S.buses.delete(id); T.delete(id); }
-    if (ages.length) { ages.sort((a, b) => a - b); lagTarget = Math.max(20, Math.min(75, ages[ages.length >> 1] + REFRESH_MS / 1000 + 4)); if (!lagAt) lag = lagTarget; }
     if (labels) for (const [rid, l] of labels) S.labels.set(rid, l);
     if (S.focusRoutes) recomputeFocus();
     refreshView(true);
@@ -1972,5 +1978,5 @@
   }
   window.addEventListener('hashchange', handleHash);
   // ?debug=motion exposes the motion model for measurement (off by default)
-  if (/[?&]debug=motion\b/.test(location.search)) window.__motion = { pos: (id) => pos(id, performance.now()), track: (id) => T.get(id), lag: () => ({ lag, lagTarget }), view: () => viewIds.slice(), feed: () => S.meta && { updated: S.meta.updated, feed_ts: S.meta.feed_ts, source: S.meta.source } };
+  if (/[?&]debug=motion\b/.test(location.search)) window.__motion = { pos: (id) => pos(id, performance.now()), track: (id) => T.get(id), lag: () => { const l = [...T.values()].map((t) => t.lag).sort((a, b) => a - b); return { median: l[l.length >> 1], p90: l[Math.floor(l.length * 0.9)] }; }, view: () => viewIds.slice(), feed: () => S.meta && { updated: S.meta.updated, feed_ts: S.meta.feed_ts, source: S.meta.source } };
 })();
