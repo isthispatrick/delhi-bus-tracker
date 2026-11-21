@@ -626,6 +626,7 @@
        Renders as a real 3D bus at zoom >= 13.5; green dots stay below that. */
     const BUS3D_MIN_ZOOM = 13.5;
     const bus3d = { ready: false, instances: [], max: 4000, renderedVersion: -1 };
+    window.__bus3d = bus3d;
     let _rxBase = null;
     function fadeOutDots() {
       // keep the circle layer present (tap targets) but invisible at high zoom
