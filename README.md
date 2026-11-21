@@ -30,3 +30,8 @@ The repo is zero-config: `public/` is served statically and `api/*.js` run as se
 
 ## Note on times
 Delhi has no true arrival-prediction system for buses. Next-bus times come from GTFS-RT trip updates (reclaim mirror) or, marked "est", from the bus's live position and speed along its route. Treat them as rough.
+
+## Credits
+
+- 3D bus model: "Low-Floor City Bus" by tevy (https://tevy.dev/models/city-bus), licensed CC0 1.0 (public domain). Sourced 2026-11-21, LOD2 variant (public/bus.glb).
+- Live data: Delhi OTD open data feed; reclaim.city mirror for shapes/stop data.

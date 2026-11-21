@@ -20,7 +20,7 @@
     attributionControl: false,
   });
   window.map = map;
-  map.addControl(new mapboxgl.AttributionControl({ compact: true }), 'bottom-right');
+  map.addControl(new mapboxgl.AttributionControl({ compact: true, customAttribution: '3D bus model: <a href="https://tevy.dev/models/city-bus" target="_blank">Low-Floor City Bus</a> by tevy (CC0)' }), 'bottom-right');
 
   /* ---------------- state ---------------- */
   let buses = [];                 // latest bus array from api
@@ -34,6 +34,7 @@
   let meMarker = null;
   let userLoc = null;             // {lat, lon}
   let routeFilter = '';
+  let busDataVersion = 0;        // bumped on every refresh so the 3D layer re-uploads instances
 
   /* ---------------- helpers ---------------- */
   const toRad = (d) => (d * Math.PI) / 180;
@@ -620,6 +621,77 @@
       paint: { 'text-color': '#f2f6fa', 'text-halo-color': '#060b12', 'text-halo-width': 1.8 },
     });
 
+    /* ---------------- 3D bus models (instanced, zoom-gated) ----------------
+       Model: "Low-Floor City Bus" by tevy.dev, CC0-1.0 (no attribution required; credit kept anyway).
+       Renders as a real 3D bus at zoom >= 13.5; green dots stay below that. */
+    const BUS3D_MIN_ZOOM = 13.5;
+    const bus3d = { ready: false, instances: [], max: 4000, renderedVersion: -1 };
+    let _rxBase = null;
+    function fadeOutDots() {
+      // keep the circle layer present (tap targets) but invisible at high zoom
+      map.setPaintProperty('buses', 'circle-opacity', ['interpolate', ['linear'], ['zoom'], BUS3D_MIN_ZOOM - 0.15, 1, BUS3D_MIN_ZOOM + 0.15, 0]);
+      map.setPaintProperty('buses', 'circle-stroke-opacity', ['interpolate', ['linear'], ['zoom'], BUS3D_MIN_ZOOM - 0.15, 1, BUS3D_MIN_ZOOM + 0.15, 0]);
+      map.setPaintProperty('buses', 'circle-radius', ['interpolate', ['linear'], ['zoom'], 10, 4, 14, 9, 16, 13]);
+      map.setPaintProperty('bus-arrows', 'icon-opacity', ['interpolate', ['linear'], ['zoom'], BUS3D_MIN_ZOOM - 0.15, 0.95, BUS3D_MIN_ZOOM + 0.15, 0]);
+    }
+    function updateBusInstances() {
+      const list = buses.slice(0, bus3d.max);
+      const n = list.length;
+      const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), m = new THREE.Matrix4(), m2 = new THREE.Matrix4();
+      const upAxis = new THREE.Vector3(0, 0, 1);
+      for (let i = 0; i < n; i++) {
+        const b = list[i];
+        const mc = mapboxgl.MercatorCoordinate.fromLngLat({ lng: b.lon, lat: b.lat }, 0);
+        const sc = mc.meterInMercatorCoordinateUnits();
+        q.setFromAxisAngle(upAxis, toRad(b.bearing || 0));
+        p.set(mc.x, mc.y, 0); s.set(sc, sc, sc);
+        m.compose(p, q, s).multiply(_rxBase);
+        for (const im of bus3d.instances) im.setMatrixAt(i, m2.copy(m).multiply(im.userData.local));
+      }
+      for (const im of bus3d.instances) { im.count = n; im.instanceMatrix.needsUpdate = true; }
+    }
+    const bus3dLayer = {
+      id: 'buses-3d', type: 'custom', renderingMode: '3d',
+      onAdd(mapInst, gl) {
+        _rxBase = new THREE.Matrix4().makeRotationX(Math.PI / 2); // model up +Y -> world up +Z
+        this.camera = new THREE.Camera();
+        this.scene = new THREE.Scene();
+        this.scene.add(new THREE.HemisphereLight(0xf4f7ff, 0x2a3442, 1.15));
+        const sun = new THREE.DirectionalLight(0xffffff, 0.55);
+        sun.position.set(60, -90, 140);
+        this.scene.add(sun);
+        this.renderer = new THREE.WebGLRenderer({ canvas: mapInst.getCanvas(), context: gl, antialias: true });
+        this.renderer.autoClear = false;
+        new THREE.GLTFLoader().load('/bus.glb', (gltf) => {
+          gltf.scene.updateMatrixWorld(true);
+          const meshes = [];
+          gltf.scene.traverse((o) => { if (o.isMesh) meshes.push(o); });
+          bus3d.instances = meshes.map((mm) => {
+            const im = new THREE.InstancedMesh(mm.geometry, mm.material, bus3d.max);
+            im.count = 0;
+            im.frustumCulled = false;
+            im.userData.local = mm.matrixWorld.clone();
+            this.scene.add(im);
+            return im;
+          });
+          bus3d.ready = true;
+          fadeOutDots();
+          map.triggerRepaint();
+        }, undefined, () => { /* model failed: green dots stay, nothing breaks */ });
+      },
+      render(gl, matrix) {
+        if (!bus3d.ready || map.getZoom() < BUS3D_MIN_ZOOM) return;
+        if (bus3d.renderedVersion !== busDataVersion) {
+          updateBusInstances();
+          bus3d.renderedVersion = busDataVersion;
+        }
+        this.camera.projectionMatrix = new THREE.Matrix4().fromArray(matrix);
+        this.renderer.state.reset();
+        this.renderer.render(this.scene, this.camera);
+      },
+    };
+    map.addLayer(bus3dLayer);
+
     map.on('click', 'stops', (e) => {
       const p = e.features[0].properties;
       if (p && p.id != null) renderStopSheet(String(p.id), p.name);
@@ -649,6 +721,8 @@
           properties: { id: b.id, route: b.route || '', route_id: b.route_id || '', route_name: routeSubName(b.route_id), speed: b.speed, ts: b.ts, bearing: b.bearing || 0 },
         }));
         map.getSource('buses').setData({ type: 'FeatureCollection', features });
+        busDataVersion++;
+        map.triggerRepaint();
         demoBadge.classList.toggle('hidden', !data.demo);
         statusDot.classList.toggle('err', Boolean(data.feed_error || data.demo));
         const time = new Date(data.updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
