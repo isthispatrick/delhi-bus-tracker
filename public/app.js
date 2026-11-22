@@ -771,10 +771,12 @@
   }
   // Locate: fly to the user, tilt up and slowly orbit around them, Google Earth style.
   // The orbit runs until they touch the map, press the locate button again, follow a bus or toggle 3D.
-  let orbitOn = false, orbitRaf = 0, orbitLast = 0;
+  let orbitOn = false, orbitRaf = 0, orbitLast = 0, orbitT0 = 0;
   function orbitStep(now) {
     if (!orbitOn) return;
-    map.setBearing(map.getBearing() + (now - orbitLast) * 0.016); // 16 deg/s: one turn every 22.5 s
+    // Ease into the spin over ~2.5 s, then hold ~9 deg/s (one turn every 40 s): slow and steady like Google Earth.
+    const k = Math.min(1, (now - orbitT0) / 2500), ease = k * k * (3 - 2 * k);
+    map.setBearing(map.getBearing() + Math.min(64, now - orbitLast) * 0.009 * ease);
     orbitLast = now;
     orbitRaf = requestAnimationFrame(orbitStep);
   }
@@ -788,14 +790,14 @@
     if (orbitOn) return;
     orbitOn = true;
     ui.btnLocate.classList.add('orbit');
-    orbitLast = performance.now();
+    orbitLast = orbitT0 = performance.now();
     orbitRaf = requestAnimationFrame(orbitStep);
   }
   ui.btnLocate.addEventListener('click', async () => {
     if (orbitOn) { stopOrbit(); return; }
     try {
       const loc = await locate();
-      map.flyTo({ center: [loc.lon, loc.lat], zoom: Math.max(map.getZoom(), 16.2), pitch: 60, duration: 1700, padding: sheetPadding() });
+      map.flyTo({ center: [loc.lon, loc.lat], zoom: Math.max(map.getZoom(), 17), pitch: 66, bearing: map.getBearing() + 30, duration: 2600, curve: 1.6, essential: true, easing: (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2), padding: sheetPadding() });
       map.once('moveend', () => { if (!S.followId) startOrbit(); });
     } catch (e) { toast(e.message); }
   });
